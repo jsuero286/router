@@ -1,0 +1,154 @@
+from fastapi import FastAPI, Request
+import httpx
+import os
+
+app = FastAPI()
+
+# 🔌 NODOS
+MAC = "http://192.168.50.119:11434"
+GPU_5070 = "http://192.158.50.79:11434"
+GPU_4070 = "http://192.168.50.118:11434"
+
+# 🧠 MODELOS (lógicos → reales)
+
+MODEL_MAP = {
+    "deepseek-coder": [
+        # 🥇 Mac primero (rápido + potente)
+        (MAC, "deepseek-coder-v2:16b"),
+
+        # 🥈 4070 (potente)
+        (GPU_4070, "deepseek-coder-v2:16b"),
+
+        # 🥉 5060 fallback REAL
+        (GPU_5070, "deepseek-coder:6.7b-instruct-q4_K_M"),
+    ],
+
+    "fast": [
+        (GPU_5070, "qwen2.5-coder:7b"),
+        (MAC, "qwen2.5-coder:1.5b"),
+    ],
+
+    "reasoning": [
+        (GPU_4070, "deepseek-r1:14b"),
+        (MAC, "deepseek-r1:14b"),
+    ]
+}
+
+# 🌐 EXTERNOS
+EXTERNAL_MODELS = {
+    "claude": {
+        "type": "anthropic",
+        "api_key": os.getenv("ANTHROPIC_API_KEY"),
+    },
+    "gemini": {
+        "type": "google",
+        "api_key": os.getenv("GEMINI_API_KEY"),
+    }
+}
+
+# ⚡ comprobar si nodo está vivo
+async def is_alive(node):
+    try:
+        async with httpx.AsyncClient(timeout=2) as client:
+            r = await client.get(f"{node}/api/tags")
+            return r.status_code == 200
+    except:
+        return False
+
+# 🔁 llamada a ollama
+async def call_ollama(node, payload):
+    try:
+        print(f"➡️ {node} | modelo: {payload['model']}")
+
+        async with httpx.AsyncClient(timeout=20) as client:
+            r = await client.post(f"{node}/api/generate", json=payload)
+
+            if r.status_code == 200:
+                print(f"✅ OK desde {node}")
+                return r.json()
+            else:
+                print(f"⚠️ Error {r.status_code}: {r.text[:120]}")
+
+    except Exception as e:
+        print(f"❌ Fallo en {node}: {e}")
+
+    return None
+
+# 🌐 Claude
+async def call_claude(payload):
+    try:
+        headers = {
+            "x-api-key": EXTERNAL_MODELS["claude"]["api_key"],
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json"
+        }
+
+        data = {
+            "model": "claude-3-sonnet-20240229",
+            "max_tokens": 1024,
+            "messages": [
+                {"role": "user", "content": payload["prompt"]}
+            ]
+        }
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers=headers,
+                json=data
+            )
+            return r.json()
+
+    except Exception as e:
+        return {"error": str(e)}
+
+# 🌐 Gemini
+async def call_gemini(payload):
+    try:
+        api_key = EXTERNAL_MODELS["gemini"]["api_key"]
+
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={api_key}",
+                json={
+                    "contents": [{
+                        "parts": [{"text": payload["prompt"]}]
+                    }]
+                }
+            )
+            return r.json()
+
+    except Exception as e:
+        return {"error": str(e)}
+
+# 🚀 endpoint principal
+@app.post("/api/generate")
+async def generate(request: Request):
+    payload = await request.json()
+    model = payload.get("model")
+
+    # 🌐 externos
+    if model in EXTERNAL_MODELS:
+        print(f"🌐 Modelo externo: {model}")
+
+        if model == "claude":
+            return await call_claude(payload)
+
+        if model == "gemini":
+            return await call_gemini(payload)
+
+    # 🧠 locales
+    if model in MODEL_MAP:
+        for node, real_model in MODEL_MAP[model]:
+
+            if not await is_alive(node):
+                print(f"⏭️ Nodo caído: {node}")
+                continue
+
+            payload["model"] = real_model
+            result = await call_ollama(node, payload)
+
+            if result:
+                return result
+
+    return {"error": "No nodes available"}
