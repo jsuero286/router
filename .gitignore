@@ -44,3 +44,5 @@ Thumbs.db
 .venv
 node_modules/
 dist/
+package-lock.json
+yarn.lock
