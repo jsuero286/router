@@ -42,3 +42,5 @@ Thumbs.db
 # Archivos donde podrías guardar contraseñas o llaves API secretas
 .env
 .venv
+node_modules/
+dist/
