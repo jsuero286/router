@@ -126,7 +126,7 @@ const MODEL_MAP: Record<string, NodeEntry[]> = {
     { nodeName: "gpu5070", model: "qwen2.5-coder:7b" },
     { nodeName: "gpu4070", model: "deepseek-coder-v2:16b" },
     { nodeName: "mac",     model: "qwen2.5-coder:1.5b" },
-    { nodeName: "gemini",  model: "gemini-2.0-flash" },      // fallback 1
+    { nodeName: "gemini",  model: "gemini-2.5-flash" },      // fallback 1
     { nodeName: "claude",  model: "claude-sonnet-4-5" },     // fallback 2
   ],
   // ── fast: solo locales rápidos ──────────────────────────────
@@ -155,7 +155,7 @@ const MODEL_MAP: Record<string, NodeEntry[]> = {
   ],
   // ── Google directo ───────────────────────────────────────────
   "gemini-flash": [
-    { nodeName: "gemini", model: "gemini-2.0-flash" },
+    { nodeName: "gemini", model: "gemini-2.5-flash" },
   ],
   "gemini-pro": [
     { nodeName: "gemini", model: "gemini-2.5-pro" },
