@@ -169,7 +169,7 @@ const MODEL_MAP: Record<string, NodeEntry[]> = {
 const CACHE_TTL = 300;
 
 const redis = new Redis({
-  host: "192.168.50.82",
+  host: "redis.casa.lan",
   port: 6379,
   password: "hom795er",
   connectTimeout: 2000,
