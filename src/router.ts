@@ -29,6 +29,14 @@ interface OllamaResponse {
   message?: { content: string };
   done?: boolean;
   error?: string;
+  prompt_eval_count?: number;
+  eval_count?: number;
+}
+
+interface TokenUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
 }
 
 interface NodeEntry {
@@ -107,11 +115,9 @@ const REDIS_ERRORS = new Counter({
 // =========================
 
 const NODES: Record<string, NodeConfig> = {
-  // Ollama — rutas internas via Traefik
   gpu5070: { url: "http://ai-5070.casa.lan", type: "ollama" },
   gpu4070: { url: "http://ai-gpu.casa.lan",  type: "ollama" },
   mac:     { url: "http://ai-mac.casa.lan",  type: "ollama" },
-  // Proveedores cloud
   claude:  { url: "https://api.anthropic.com",                 type: "anthropic" },
   gemini:  { url: "https://generativelanguage.googleapis.com", type: "google" },
 };
@@ -121,72 +127,54 @@ const NODES: Record<string, NodeConfig> = {
 // =========================
 
 const MODEL_MAP: Record<string, NodeEntry[]> = {
-
-  // ── AUTOMÁTICOS (el router elige) ───────────────────────────
-
-  // auto: locales primero, Google segundo, Anthropic último
+  // ── AUTOMÁTICOS ─────────────────────────────────────────────
   auto: [
     { nodeName: "gpu5070", model: "qwen2.5-coder:7b" },
     { nodeName: "gpu4070", model: "deepseek-coder-v2:16b" },
     { nodeName: "mac",     model: "qwen2.5-coder:1.5b" },
-    { nodeName: "gemini",  model: "gemini-2.5-flash" },   // fallback 1
-    { nodeName: "claude",  model: "claude-sonnet-4-5" },  // fallback 2
+    { nodeName: "gemini",  model: "gemini-2.5-flash" },
+    { nodeName: "claude",  model: "claude-sonnet-4-5" },
   ],
-  // fast: solo locales rápidos
   fast: [
     { nodeName: "gpu5070", model: "qwen2.5-coder:7b" },
     { nodeName: "mac",     model: "qwen2.5-coder:1.5b" },
   ],
-  // reasoning: local + cloud como fallback
   reasoning: [
     { nodeName: "gpu4070", model: "deepseek-r1:14b" },
     { nodeName: "mac",     model: "deepseek-r1:14b" },
-    { nodeName: "gemini",  model: "gemini-2.5-pro" },    // fallback 1
-    { nodeName: "claude",  model: "claude-opus-4-5" },   // fallback 2
+    { nodeName: "gemini",  model: "gemini-2.5-pro" },
+    { nodeName: "claude",  model: "claude-opus-4-5" },
   ],
-  // deepseek-coder: solo local
   "deepseek-coder": [
     { nodeName: "gpu4070", model: "deepseek-coder-v2:16b" },
     { nodeName: "gpu5070", model: "deepseek-coder:6.7b-instruct-q4_K_M" },
   ],
-
-  // ── NODOS ESPECÍFICOS (tú eliges) ───────────────────────────
-
-  // Mac
+  // ── NODOS ESPECÍFICOS ────────────────────────────────────────
   "mac-fast": [
     { nodeName: "mac", model: "qwen2.5-coder:1.5b" },
   ],
   "mac-reason": [
     { nodeName: "mac", model: "deepseek-r1:14b" },
   ],
-
-  // GPU 5070
   "gpu5070-fast": [
     { nodeName: "gpu5070", model: "qwen2.5-coder:7b" },
   ],
   "gpu5070-coder": [
     { nodeName: "gpu5070", model: "deepseek-coder:6.7b-instruct-q4_K_M" },
   ],
-
-  // GPU 4070
   "gpu4070-coder": [
     { nodeName: "gpu4070", model: "deepseek-coder-v2:16b" },
   ],
   "gpu4070-reason": [
     { nodeName: "gpu4070", model: "deepseek-r1:14b" },
   ],
-
   // ── CLOUD DIRECTO ────────────────────────────────────────────
-
-  // Anthropic
   "claude-sonnet": [
     { nodeName: "claude", model: "claude-sonnet-4-5" },
   ],
   "claude-opus": [
     { nodeName: "claude", model: "claude-opus-4-5" },
   ],
-
-  // Google
   "gemini-flash": [
     { nodeName: "gemini", model: "gemini-2.5-flash" },
   ],
@@ -210,9 +198,7 @@ const redis = new Redis({
   lazyConnect: true,
 });
 
-redis.on("error", () => {
-  // Silenciado — los errores se registran en métricas
-});
+redis.on("error", () => {});
 
 function cacheKey(messages: ChatMessage[], model: string): string {
   const raw = `${model}:${JSON.stringify(messages)}`;
@@ -223,10 +209,7 @@ async function getCache(messages: ChatMessage[], model: string): Promise<string 
   try {
     const key = cacheKey(messages, model);
     const value = await redis.get(key);
-    if (value) {
-      CACHE_HITS.inc();
-      return value;
-    }
+    if (value) { CACHE_HITS.inc(); return value; }
     CACHE_MISS.inc();
     return null;
   } catch (e) {
@@ -251,9 +234,7 @@ async function setCache(messages: ChatMessage[], model: string, value: string): 
 // =========================
 
 async function getNodeLoad(nodeConfig: NodeConfig): Promise<number> {
-  // Los nodos cloud no tienen /api/tags — siempre disponibles
   if (nodeConfig.type !== "ollama") return 1;
-
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 2000);
@@ -267,11 +248,6 @@ async function getNodeLoad(nodeConfig: NodeConfig): Promise<number> {
 
 // =========================
 // 🧠 ROUTING
-// Lógica:
-//   1. Comprobar todos los nodos Ollama en paralelo
-//   2. Si hay alguno online → elegir el de menor load
-//   3. Si todos caídos → intentar cloud en orden (Google → Anthropic)
-//   4. Saltar cloud si no tiene API key configurada
 // =========================
 
 interface SelectedNode {
@@ -287,7 +263,6 @@ async function selectNode(modelAlias: string): Promise<SelectedNode | null> {
   const ollamaEntries = entries.filter((e) => NODES[e.nodeName]?.type === "ollama");
   const cloudEntries  = entries.filter((e) => NODES[e.nodeName]?.type !== "ollama");
 
-  // — Paso 1: Ollama en paralelo —
   if (ollamaEntries.length > 0) {
     const loadResults = await Promise.all(
       ollamaEntries.map(async (entry) => {
@@ -301,25 +276,21 @@ async function selectNode(modelAlias: string): Promise<SelectedNode | null> {
 
     let bestNode: SelectedNode | null = null;
     let bestLoad = Infinity;
-
     for (const { entry, config, load } of loadResults) {
       if (config && load < bestLoad) {
         bestLoad = load;
         bestNode = { nodeName: entry.nodeName, model: entry.model, config };
       }
     }
-
     if (bestNode) {
       NODE_SELECTED.labels({ node: bestNode.nodeName }).inc();
       return bestNode;
     }
   }
 
-  // — Paso 2: Fallback cloud en orden —
   for (const entry of cloudEntries) {
     const config = NODES[entry.nodeName];
     if (!config) continue;
-
     if (config.type === "anthropic" && !ANTHROPIC_API_KEY) {
       console.warn("[ROUTER] Saltando Anthropic: ANTHROPIC_API_KEY no definida");
       continue;
@@ -328,7 +299,6 @@ async function selectNode(modelAlias: string): Promise<SelectedNode | null> {
       console.warn("[ROUTER] Saltando Google: GOOGLE_API_KEY no definida");
       continue;
     }
-
     NODE_SELECTED.labels({ node: entry.nodeName }).inc();
     return { nodeName: entry.nodeName, model: entry.model, config };
   }
@@ -351,9 +321,7 @@ async function callOllama(
     body: JSON.stringify({ model, messages, stream: false }),
     signal: AbortSignal.timeout(120_000),
   });
-
   if (!res.ok) return { error: `HTTP ${res.status}: ${await res.text()}` };
-
   try {
     return (await res.json()) as OllamaResponse;
   } catch {
@@ -370,7 +338,6 @@ async function callAnthropic(model: string, messages: ChatMessage[]): Promise<Ol
 
   const systemMsg = messages.find((m) => m.role === "system")?.content;
   const userMessages = messages.filter((m) => m.role !== "system");
-
   const body: Record<string, unknown> = { model, max_tokens: 8096, messages: userMessages };
   if (systemMsg) body.system = systemMsg;
 
@@ -384,11 +351,15 @@ async function callAnthropic(model: string, messages: ChatMessage[]): Promise<Ol
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(120_000),
   });
-
   if (!res.ok) return { error: `Anthropic HTTP ${res.status}: ${await res.text()}` };
 
   const data = (await res.json()) as any;
-  return { message: { content: data.content?.[0]?.text ?? "" }, done: true };
+  return {
+    message: { content: data.content?.[0]?.text ?? "" },
+    done: true,
+    prompt_eval_count: data.usage?.input_tokens ?? -1,
+    eval_count: data.usage?.output_tokens ?? -1,
+  };
 }
 
 // =========================
@@ -400,28 +371,29 @@ async function callGoogle(model: string, messages: ChatMessage[]): Promise<Ollam
 
   const systemMsg = messages.find((m) => m.role === "system")?.content;
   const userMessages = messages.filter((m) => m.role !== "system");
-
   const contents = userMessages.map((m) => ({
     role: m.role === "assistant" ? "model" : "user",
     parts: [{ text: m.content }],
   }));
-
   const body: Record<string, unknown> = { contents };
   if (systemMsg) body.systemInstruction = { parts: [{ text: systemMsg }] };
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GOOGLE_API_KEY}`;
-
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(120_000),
   });
-
   if (!res.ok) return { error: `Google HTTP ${res.status}: ${await res.text()}` };
 
   const data = (await res.json()) as any;
-  return { message: { content: data.candidates?.[0]?.content?.parts?.[0]?.text ?? "" }, done: true };
+  return {
+    message: { content: data.candidates?.[0]?.content?.parts?.[0]?.text ?? "" },
+    done: true,
+    prompt_eval_count: data.usageMetadata?.promptTokenCount ?? -1,
+    eval_count: data.usageMetadata?.candidatesTokenCount ?? -1,
+  };
 }
 
 // =========================
@@ -440,15 +412,14 @@ async function* streamOllama(
     signal: AbortSignal.timeout(300_000),
   });
 
-  if (!res.body) {
-    yield `data: ${JSON.stringify({ error: "No response body" })}\n\n`;
-    return;
-  }
+  if (!res.body) { yield `data: ${JSON.stringify({ error: "No response body" })}\n\n`; return; }
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let isFirst = true;
+  let promptTokens = -1;
+  let completionTokens = -1;
 
   const baseChunk = () => ({
     id: "chatcmpl-local",
@@ -487,7 +458,18 @@ async function* streamOllama(
         }
 
         if (data.done) {
-          yield `data: ${JSON.stringify({ ...baseChunk(), choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`;
+          promptTokens = data.prompt_eval_count ?? -1;
+          completionTokens = data.eval_count ?? -1;
+          const doneChunk = {
+            ...baseChunk(),
+            choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+            usage: {
+              prompt_tokens: promptTokens,
+              completion_tokens: completionTokens,
+              total_tokens: promptTokens >= 0 && completionTokens >= 0 ? promptTokens + completionTokens : -1,
+            },
+          };
+          yield `data: ${JSON.stringify(doneChunk)}\n\n`;
           yield "data: [DONE]\n\n";
           return;
         }
@@ -530,6 +512,8 @@ async function* streamAnthropic(model: string, messages: ChatMessage[]): AsyncGe
   const decoder = new TextDecoder();
   let buffer = "";
   let isFirst = true;
+  let promptTokens = -1;
+  let completionTokens = -1;
 
   const baseChunk = () => ({
     id: "chatcmpl-anthropic",
@@ -555,6 +539,16 @@ async function* streamAnthropic(model: string, messages: ChatMessage[]): AsyncGe
         let event: any;
         try { event = JSON.parse(raw); } catch { continue; }
 
+        // Capturar tokens del evento message_start
+        if (event.type === "message_start" && event.message?.usage) {
+          promptTokens = event.message.usage.input_tokens ?? -1;
+        }
+
+        // Capturar tokens del evento message_delta
+        if (event.type === "message_delta" && event.usage) {
+          completionTokens = event.usage.output_tokens ?? -1;
+        }
+
         if (event.type === "content_block_delta" && event.delta?.type === "text_delta") {
           const content = event.delta.text ?? "";
           yield `data: ${JSON.stringify({
@@ -565,7 +559,16 @@ async function* streamAnthropic(model: string, messages: ChatMessage[]): AsyncGe
         }
 
         if (event.type === "message_stop") {
-          yield `data: ${JSON.stringify({ ...baseChunk(), choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`;
+          const doneChunk = {
+            ...baseChunk(),
+            choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+            usage: {
+              prompt_tokens: promptTokens,
+              completion_tokens: completionTokens,
+              total_tokens: promptTokens >= 0 && completionTokens >= 0 ? promptTokens + completionTokens : -1,
+            },
+          };
+          yield `data: ${JSON.stringify(doneChunk)}\n\n`;
           yield "data: [DONE]\n\n";
           return;
         }
@@ -609,6 +612,8 @@ async function* streamGoogle(model: string, messages: ChatMessage[]): AsyncGener
   const decoder = new TextDecoder();
   let buffer = "";
   let isFirst = true;
+  let promptTokens = -1;
+  let completionTokens = -1;
 
   const baseChunk = () => ({
     id: "chatcmpl-google",
@@ -634,6 +639,12 @@ async function* streamGoogle(model: string, messages: ChatMessage[]): AsyncGener
         let event: any;
         try { event = JSON.parse(raw); } catch { continue; }
 
+        // Capturar tokens de usageMetadata
+        if (event.usageMetadata) {
+          promptTokens = event.usageMetadata.promptTokenCount ?? -1;
+          completionTokens = event.usageMetadata.candidatesTokenCount ?? -1;
+        }
+
         const text = event.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
         if (text) {
           yield `data: ${JSON.stringify({
@@ -644,7 +655,16 @@ async function* streamGoogle(model: string, messages: ChatMessage[]): AsyncGener
         }
 
         if (event.candidates?.[0]?.finishReason === "STOP") {
-          yield `data: ${JSON.stringify({ ...baseChunk(), choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\n`;
+          const doneChunk = {
+            ...baseChunk(),
+            choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+            usage: {
+              prompt_tokens: promptTokens,
+              completion_tokens: completionTokens,
+              total_tokens: promptTokens >= 0 && completionTokens >= 0 ? promptTokens + completionTokens : -1,
+            },
+          };
+          yield `data: ${JSON.stringify(doneChunk)}\n\n`;
           yield "data: [DONE]\n\n";
           return;
         }
@@ -659,7 +679,7 @@ async function* streamGoogle(model: string, messages: ChatMessage[]): AsyncGener
 // 🧠 OPENAI RESPONSE FORMAT
 // =========================
 
-function openaiResponse(model: string, content: string) {
+function openaiResponse(model: string, content: string, promptTokens = -1, completionTokens = -1) {
   return {
     id: `chatcmpl-${Date.now()}`,
     object: "chat.completion",
@@ -667,7 +687,11 @@ function openaiResponse(model: string, content: string) {
     model,
     system_fingerprint: "local-router",
     choices: [{ index: 0, message: { role: "assistant", content: content ?? "" }, finish_reason: "stop" }],
-    usage: { prompt_tokens: -1, completion_tokens: -1, total_tokens: -1 },
+    usage: {
+      prompt_tokens: promptTokens,
+      completion_tokens: completionTokens,
+      total_tokens: promptTokens >= 0 && completionTokens >= 0 ? promptTokens + completionTokens : -1,
+    },
   };
 }
 
@@ -741,7 +765,12 @@ async function handleChat(data: ChatRequest, reply: FastifyReply) {
   }
 
   await setCache(messages, model, content);
-  return reply.send(openaiResponse(model, content));
+  return reply.send(openaiResponse(
+    model,
+    content,
+    result.prompt_eval_count ?? -1,
+    result.eval_count ?? -1
+  ));
 }
 
 // =========================
