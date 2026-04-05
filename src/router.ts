@@ -6,12 +6,13 @@ import * as fs from "fs";
 import * as path from "path";
 
 // =========================
-// 🔑 API KEYS (via entorno)
+// 🔧 CONFIG (via entorno)
 // =========================
 
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? "";
-const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY ?? "";
-const SKILLS_DIR = process.env.SKILLS_DIR ?? path.join(process.cwd(), "skills");
+const ANTHROPIC_API_KEY  = process.env.ANTHROPIC_API_KEY ?? "";
+const GOOGLE_API_KEY     = process.env.GOOGLE_API_KEY ?? "";
+const SKILLS_DIR         = process.env.SKILLS_DIR ?? path.join(process.cwd(), "skills");
+const METRICS_ENABLED    = (process.env.METRICS_ENABLED ?? "true") === "true";
 
 // =========================
 // 🔧 TYPES
@@ -49,63 +50,83 @@ interface NodeConfig {
 }
 
 // =========================
-// 📊 MÉTRICAS
+// 📊 MÉTRICAS (configurables)
 // =========================
 
 const registry = new Registry();
-collectDefaultMetrics({ register: registry });
 
-const REQUEST_COUNT = new Counter({
-  name: "llm_requests_total",
-  help: "Total requests",
-  labelNames: ["model"] as const,
-  registers: [registry],
-});
+// Wrappers que no hacen nada si las métricas están desactivadas
+const noop = () => {};
+const noopObs = (_v: number) => {};
 
-const REQUEST_LATENCY = new Histogram({
-  name: "llm_latency_seconds",
-  help: "Latency",
-  labelNames: ["model"] as const,
-  registers: [registry],
-});
+let REQUEST_COUNT_inc:       (labels: { model: string }) => void;
+let REQUEST_LATENCY_observe: (labels: { model: string }, value: number) => void;
+let CACHE_HITS_inc:          () => void;
+let CACHE_MISS_inc:          () => void;
+let ERROR_COUNT_inc:         () => void;
+let NODE_SELECTED_inc:       (labels: { node: string }) => void;
+let NODE_LOAD_set:           (labels: { node: string }, value: number) => void;
+let REDIS_ERRORS_inc:        () => void;
+let TOKENS_PER_SEC_observe:  (labels: { model: string }, value: number) => void;
 
-const CACHE_HITS = new Counter({
-  name: "llm_cache_hits_total",
-  help: "Cache hits",
-  registers: [registry],
-});
+if (METRICS_ENABLED) {
+  collectDefaultMetrics({ register: registry });
 
-const CACHE_MISS = new Counter({
-  name: "llm_cache_miss_total",
-  help: "Cache miss",
-  registers: [registry],
-});
+  const REQUEST_COUNT = new Counter({
+    name: "llm_requests_total", help: "Total requests",
+    labelNames: ["model"] as const, registers: [registry],
+  });
+  const REQUEST_LATENCY = new Histogram({
+    name: "llm_latency_seconds", help: "Latency",
+    labelNames: ["model"] as const, registers: [registry],
+  });
+  const CACHE_HITS = new Counter({
+    name: "llm_cache_hits_total", help: "Cache hits", registers: [registry],
+  });
+  const CACHE_MISS = new Counter({
+    name: "llm_cache_miss_total", help: "Cache miss", registers: [registry],
+  });
+  const ERROR_COUNT = new Counter({
+    name: "llm_errors_total", help: "Errors", registers: [registry],
+  });
+  const NODE_SELECTED = new Counter({
+    name: "llm_node_selected_total", help: "Node selection",
+    labelNames: ["node"] as const, registers: [registry],
+  });
+  const NODE_LOAD = new Gauge({
+    name: "llm_node_load", help: "Node load",
+    labelNames: ["node"] as const, registers: [registry],
+  });
+  const REDIS_ERRORS = new Counter({
+    name: "llm_redis_errors_total", help: "Redis errors", registers: [registry],
+  });
+  const TOKENS_PER_SEC = new Histogram({
+    name: "llm_tokens_per_second", help: "Tokens generated per second",
+    labelNames: ["model"] as const,
+    buckets: [1, 5, 10, 20, 30, 50, 75, 100, 150, 200],
+    registers: [registry],
+  });
 
-const ERROR_COUNT = new Counter({
-  name: "llm_errors_total",
-  help: "Errors",
-  registers: [registry],
-});
-
-const NODE_SELECTED = new Counter({
-  name: "llm_node_selected_total",
-  help: "Node selection",
-  labelNames: ["node"] as const,
-  registers: [registry],
-});
-
-const NODE_LOAD = new Gauge({
-  name: "llm_node_load",
-  help: "Node load",
-  labelNames: ["node"] as const,
-  registers: [registry],
-});
-
-const REDIS_ERRORS = new Counter({
-  name: "llm_redis_errors_total",
-  help: "Redis errors",
-  registers: [registry],
-});
+  REQUEST_COUNT_inc       = (l) => REQUEST_COUNT.labels(l).inc();
+  REQUEST_LATENCY_observe = (l, v) => REQUEST_LATENCY.labels(l).observe(v);
+  CACHE_HITS_inc          = () => CACHE_HITS.inc();
+  CACHE_MISS_inc          = () => CACHE_MISS.inc();
+  ERROR_COUNT_inc         = () => ERROR_COUNT.inc();
+  NODE_SELECTED_inc       = (l) => NODE_SELECTED.labels(l).inc();
+  NODE_LOAD_set           = (l, v) => NODE_LOAD.labels(l).set(v);
+  REDIS_ERRORS_inc        = () => REDIS_ERRORS.inc();
+  TOKENS_PER_SEC_observe  = (l, v) => TOKENS_PER_SEC.labels(l).observe(v);
+} else {
+  REQUEST_COUNT_inc       = noop;
+  REQUEST_LATENCY_observe = noop;
+  CACHE_HITS_inc          = noop;
+  CACHE_MISS_inc          = noop;
+  ERROR_COUNT_inc         = noop;
+  NODE_SELECTED_inc       = noop;
+  NODE_LOAD_set           = noop;
+  REDIS_ERRORS_inc        = noop;
+  TOKENS_PER_SEC_observe  = noop;
+}
 
 // =========================
 // 🔌 NODOS
@@ -124,7 +145,6 @@ const NODES: Record<string, NodeConfig> = {
 // =========================
 
 const BASE_MODEL_MAP: Record<string, NodeEntry[]> = {
-  // ── AUTOMÁTICOS ─────────────────────────────────────────────
   auto: [
     { nodeName: "gpu5070", model: "qwen2.5-coder:7b" },
     { nodeName: "gpu4070", model: "deepseek-coder-v2:16b" },
@@ -146,56 +166,24 @@ const BASE_MODEL_MAP: Record<string, NodeEntry[]> = {
     { nodeName: "gpu4070", model: "deepseek-coder-v2:16b" },
     { nodeName: "gpu5070", model: "deepseek-coder:6.7b-instruct-q4_K_M" },
   ],
-  // ── NODOS ESPECÍFICOS ────────────────────────────────────────
-  "mac-fast": [
-    { nodeName: "mac", model: "qwen2.5-coder:1.5b" },
-  ],
-  "mac-reason": [
-    { nodeName: "mac", model: "deepseek-r1:14b" },
-  ],
-  "mac-coder": [
-    { nodeName: "mac", model: "deepseek-coder-v2:16b" },
-  ],
-  "gpu5070-fast": [
-    { nodeName: "gpu5070", model: "qwen2.5-coder:7b" },
-  ],
-  "gpu5070-coder": [
-    { nodeName: "gpu5070", model: "deepseek-coder:6.7b-instruct-q4_K_M" },
-  ],
-  "gpu4070-coder": [
-    { nodeName: "gpu4070", model: "deepseek-coder-v2:16b" },
-  ],
-  "gpu4070-reason": [
-    { nodeName: "gpu4070", model: "deepseek-r1:14b" },
-  ],
-  // ── CLOUD DIRECTO ────────────────────────────────────────────
-  "claude-sonnet": [
-    { nodeName: "claude", model: "claude-sonnet-4-5" },
-  ],
-  "claude-opus": [
-    { nodeName: "claude", model: "claude-opus-4-5" },
-  ],
-  "gemini-flash": [
-    { nodeName: "gemini", model: "gemini-2.5-flash" },
-  ],
-  "gemini-pro": [
-    { nodeName: "gemini", model: "gemini-2.5-pro" },
-  ],
+  "mac-fast":        [{ nodeName: "mac",     model: "qwen2.5-coder:1.5b" }],
+  "mac-reason":      [{ nodeName: "mac",     model: "deepseek-r1:14b" }],
+  "mac-coder":       [{ nodeName: "mac",     model: "deepseek-coder-v2:16b" }],
+  "gpu5070-fast":    [{ nodeName: "gpu5070", model: "qwen2.5-coder:7b" }],
+  "gpu5070-coder":   [{ nodeName: "gpu5070", model: "deepseek-coder:6.7b-instruct-q4_K_M" }],
+  "gpu4070-coder":   [{ nodeName: "gpu4070", model: "deepseek-coder-v2:16b" }],
+  "gpu4070-reason":  [{ nodeName: "gpu4070", model: "deepseek-r1:14b" }],
+  "claude-sonnet":   [{ nodeName: "claude",  model: "claude-sonnet-4-5" }],
+  "claude-opus":     [{ nodeName: "claude",  model: "claude-opus-4-5" }],
+  "gemini-flash":    [{ nodeName: "gemini",  model: "gemini-2.5-flash" }],
+  "gemini-pro":      [{ nodeName: "gemini",  model: "gemini-2.5-pro" }],
 };
 
 // =========================
 // 🧠 SKILLS — carga dinámica
-// Nodos con suficiente capacidad para seguir system prompts:
-//   mac      → deepseek-r1:14b / deepseek-coder-v2:16b
-//   gpu4070  → deepseek-r1:14b / deepseek-coder-v2:16b
-//   gemini   → gemini-2.5-flash
-//   claude   → claude-sonnet-4-5
 // =========================
 
-// Map de skills cargados: skillName → system prompt
 const SKILLS: Record<string, string> = {};
-
-// MODEL_MAP dinámico que se construye al arrancar
 let MODEL_MAP: Record<string, NodeEntry[]> = { ...BASE_MODEL_MAP };
 
 function loadSkills(): void {
@@ -203,42 +191,24 @@ function loadSkills(): void {
     console.log(`[SKILLS] Carpeta no encontrada: ${SKILLS_DIR} — skills desactivados`);
     return;
   }
-
   const files = fs.readdirSync(SKILLS_DIR).filter((f) => f.endsWith(".md"));
-
   if (files.length === 0) {
     console.log(`[SKILLS] No se encontraron ficheros .md en ${SKILLS_DIR}`);
     return;
   }
-
   for (const file of files) {
     const skillName = path.basename(file, ".md");
     const content = fs.readFileSync(path.join(SKILLS_DIR, file), "utf-8").trim();
     SKILLS[skillName] = content;
-
-    // Crear entradas en MODEL_MAP para cada skill + nodo capaz
-    MODEL_MAP[`${skillName}-mac`] = [
-      { nodeName: "mac", model: "deepseek-coder-v2:16b" },
-    ];
-    MODEL_MAP[`${skillName}-4070`] = [
-      { nodeName: "gpu4070", model: "deepseek-coder-v2:16b" },
-    ];
-    MODEL_MAP[`${skillName}-4070-reason`] = [
-      { nodeName: "gpu4070", model: "deepseek-r1:14b" },
-    ];
-    MODEL_MAP[`${skillName}-gemini`] = [
-      { nodeName: "gemini", model: "gemini-2.5-flash" },
-    ];
-    MODEL_MAP[`${skillName}-claude`] = [
-      { nodeName: "claude", model: "claude-sonnet-4-5" },
-    ];
-
-    console.log(`[SKILLS] ✅ ${skillName} → mac, 4070, gemini, claude`);
+    MODEL_MAP[`${skillName}-mac`]         = [{ nodeName: "mac",     model: "deepseek-coder-v2:16b" }];
+    MODEL_MAP[`${skillName}-4070`]        = [{ nodeName: "gpu4070", model: "deepseek-coder-v2:16b" }];
+    MODEL_MAP[`${skillName}-4070-reason`] = [{ nodeName: "gpu4070", model: "deepseek-r1:14b" }];
+    MODEL_MAP[`${skillName}-gemini`]      = [{ nodeName: "gemini",  model: "gemini-2.5-flash" }];
+    MODEL_MAP[`${skillName}-claude`]      = [{ nodeName: "claude",  model: "claude-sonnet-4-5" }];
+    console.log(`[SKILLS] ✅ ${skillName} → mac, 4070, 4070-reason, gemini, claude`);
   }
 }
 
-// Extrae el nombre del skill de un alias de modelo
-// Ej: "angular-expert-gemini" → "angular-expert"
 function extractSkill(modelAlias: string): string | null {
   for (const skillName of Object.keys(SKILLS)) {
     if (modelAlias.startsWith(skillName + "-") || modelAlias === skillName) {
@@ -248,30 +218,48 @@ function extractSkill(modelAlias: string): string | null {
   return null;
 }
 
-// Inyecta el system prompt del skill en los mensajes
 function injectSkill(messages: ChatMessage[], skillName: string): ChatMessage[] {
   const systemPrompt = SKILLS[skillName];
   if (!systemPrompt) return messages;
-
-  // Si ya hay un system message, lo prepende al existente
   const hasSystem = messages.some((m) => m.role === "system");
   if (hasSystem) {
     return messages.map((m) =>
-      m.role === "system"
-        ? { ...m, content: `${systemPrompt}\n\n${m.content}` }
-        : m
+      m.role === "system" ? { ...m, content: `${systemPrompt}\n\n${m.content}` } : m
     );
   }
-
-  // Si no hay system message, lo añade al principio
   return [{ role: "system", content: systemPrompt }, ...messages];
 }
 
 // =========================
-// 🧠 REDIS CACHE
+// 🧠 CACHE — Redis + fallback memoria
 // =========================
 
 const CACHE_TTL = 300;
+
+// Cache en memoria como fallback
+const memCache = new Map<string, { value: string; expires: number }>();
+
+function memCacheGet(key: string): string | null {
+  const entry = memCache.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.expires) {
+    memCache.delete(key);
+    return null;
+  }
+  return entry.value;
+}
+
+function memCacheSet(key: string, value: string): void {
+  // Limitar tamaño del cache en memoria a 200 entradas
+  if (memCache.size >= 200) {
+    const firstKey = memCache.keys().next().value;
+    if (firstKey) memCache.delete(firstKey);
+  }
+  memCache.set(key, { value, expires: Date.now() + CACHE_TTL * 1000 });
+}
+
+// Estado de Redis
+let redisAvailable = false;
 
 const redis = new Redis({
   host: "192.168.50.82",
@@ -280,9 +268,20 @@ const redis = new Redis({
   connectTimeout: 2000,
   commandTimeout: 2000,
   lazyConnect: true,
+  maxRetriesPerRequest: 1,
 });
 
-redis.on("error", () => {});
+redis.on("connect", () => {
+  redisAvailable = true;
+  console.log("[CACHE] Redis conectado ✅");
+});
+
+redis.on("error", () => {
+  if (redisAvailable) {
+    console.warn("[CACHE] Redis no disponible — usando cache en memoria");
+  }
+  redisAvailable = false;
+});
 
 function cacheKey(messages: ChatMessage[], model: string): string {
   const raw = `${model}:${JSON.stringify(messages)}`;
@@ -290,27 +289,43 @@ function cacheKey(messages: ChatMessage[], model: string): string {
 }
 
 async function getCache(messages: ChatMessage[], model: string): Promise<string | null> {
-  try {
-    const key = cacheKey(messages, model);
-    const value = await redis.get(key);
-    if (value) { CACHE_HITS.inc(); return value; }
-    CACHE_MISS.inc();
-    return null;
-  } catch (e) {
-    REDIS_ERRORS.inc();
-    console.error("Redis error (get):", e);
-    return null;
+  const key = cacheKey(messages, model);
+
+  if (redisAvailable) {
+    try {
+      const value = await redis.get(key);
+      if (value) { CACHE_HITS_inc(); return value; }
+    } catch (e) {
+      REDIS_ERRORS_inc();
+      redisAvailable = false;
+      console.warn("[CACHE] Redis error en get — fallback a memoria:", e);
+    }
   }
+
+  // Fallback a memoria
+  const memValue = memCacheGet(key);
+  if (memValue) { CACHE_HITS_inc(); return memValue; }
+
+  CACHE_MISS_inc();
+  return null;
 }
 
 async function setCache(messages: ChatMessage[], model: string, value: string): Promise<void> {
-  try {
-    const key = cacheKey(messages, model);
-    await redis.setex(key, CACHE_TTL, value);
-  } catch (e) {
-    REDIS_ERRORS.inc();
-    console.error("Redis error (set):", e);
+  const key = cacheKey(messages, model);
+
+  if (redisAvailable) {
+    try {
+      await redis.setex(key, CACHE_TTL, value);
+      return;
+    } catch (e) {
+      REDIS_ERRORS_inc();
+      redisAvailable = false;
+      console.warn("[CACHE] Redis error en set — fallback a memoria:", e);
+    }
   }
+
+  // Fallback a memoria
+  memCacheSet(key, value);
 }
 
 // =========================
@@ -353,7 +368,7 @@ async function selectNode(modelAlias: string): Promise<SelectedNode | null> {
         const config = NODES[entry.nodeName];
         if (!config) return { entry, config: null, load: 999 };
         const load = await getNodeLoad(config);
-        NODE_LOAD.labels({ node: entry.nodeName }).set(load);
+        NODE_LOAD_set({ node: entry.nodeName }, load);
         return { entry, config, load };
       })
     );
@@ -367,7 +382,7 @@ async function selectNode(modelAlias: string): Promise<SelectedNode | null> {
       }
     }
     if (bestNode) {
-      NODE_SELECTED.labels({ node: bestNode.nodeName }).inc();
+      NODE_SELECTED_inc({ node: bestNode.nodeName });
       return bestNode;
     }
   }
@@ -377,7 +392,7 @@ async function selectNode(modelAlias: string): Promise<SelectedNode | null> {
     if (!config) continue;
     if (config.type === "anthropic" && !ANTHROPIC_API_KEY) continue;
     if (config.type === "google" && !GOOGLE_API_KEY) continue;
-    NODE_SELECTED.labels({ node: entry.nodeName }).inc();
+    NODE_SELECTED_inc({ node: entry.nodeName });
     return { nodeName: entry.nodeName, model: entry.model, config };
   }
 
@@ -396,11 +411,8 @@ async function callOllama(nodeUrl: string, model: string, messages: ChatMessage[
     signal: AbortSignal.timeout(120_000),
   });
   if (!res.ok) return { error: `HTTP ${res.status}: ${await res.text()}` };
-  try {
-    return (await res.json()) as OllamaResponse;
-  } catch {
-    return { error: "Invalid JSON from Ollama" };
-  }
+  try { return (await res.json()) as OllamaResponse; }
+  catch { return { error: "Invalid JSON from Ollama" }; }
 }
 
 // =========================
@@ -415,11 +427,7 @@ async function callAnthropic(model: string, messages: ChatMessage[]): Promise<Ol
   if (systemMsg) body.system = systemMsg;
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": ANTHROPIC_API_KEY,
-      "anthropic-version": "2023-06-01",
-    },
+    headers: { "Content-Type": "application/json", "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" },
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(120_000),
   });
@@ -483,13 +491,11 @@ async function* streamOllama(nodeUrl: string, model: string, messages: ChatMessa
   let isFirst = true;
   let promptTokens = -1;
   let completionTokens = -1;
+  const genStart = Date.now();
 
   const baseChunk = () => ({
-    id: "chatcmpl-local",
-    object: "chat.completion.chunk",
-    created: Math.floor(Date.now() / 1000),
-    model,
-    system_fingerprint: "local-router",
+    id: "chatcmpl-local", object: "chat.completion.chunk",
+    created: Math.floor(Date.now() / 1000), model, system_fingerprint: "local-router",
   });
 
   try {
@@ -505,16 +511,19 @@ async function* streamOllama(nodeUrl: string, model: string, messages: ChatMessa
         try { data = JSON.parse(line) as OllamaResponse; } catch { continue; }
         if (data.message !== undefined) {
           const content = data.message?.content ?? "";
-          const chunk = {
+          yield `data: ${JSON.stringify({
             ...baseChunk(),
             choices: [{ index: 0, delta: isFirst ? { role: "assistant", content } : { content }, finish_reason: null }],
-          };
+          })}\n\n`;
           isFirst = false;
-          if (content || isFirst) yield `data: ${JSON.stringify(chunk)}\n\n`;
         }
         if (data.done) {
           promptTokens = data.prompt_eval_count ?? -1;
           completionTokens = data.eval_count ?? -1;
+          const elapsedSec = (Date.now() - genStart) / 1000;
+          if (completionTokens > 0 && elapsedSec > 0) {
+            TOKENS_PER_SEC_observe({ model }, completionTokens / elapsedSec);
+          }
           yield `data: ${JSON.stringify({
             ...baseChunk(),
             choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
@@ -558,13 +567,11 @@ async function* streamAnthropic(model: string, messages: ChatMessage[]): AsyncGe
   let isFirst = true;
   let promptTokens = -1;
   let completionTokens = -1;
+  const genStart = Date.now();
 
   const baseChunk = () => ({
-    id: "chatcmpl-anthropic",
-    object: "chat.completion.chunk",
-    created: Math.floor(Date.now() / 1000),
-    model,
-    system_fingerprint: "anthropic-router",
+    id: "chatcmpl-anthropic", object: "chat.completion.chunk",
+    created: Math.floor(Date.now() / 1000), model, system_fingerprint: "anthropic-router",
   });
 
   try {
@@ -591,6 +598,10 @@ async function* streamAnthropic(model: string, messages: ChatMessage[]): AsyncGe
           isFirst = false;
         }
         if (event.type === "message_stop") {
+          const elapsedSec = (Date.now() - genStart) / 1000;
+          if (completionTokens > 0 && elapsedSec > 0) {
+            TOKENS_PER_SEC_observe({ model }, completionTokens / elapsedSec);
+          }
           yield `data: ${JSON.stringify({
             ...baseChunk(),
             choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
@@ -639,13 +650,11 @@ async function* streamGoogle(model: string, messages: ChatMessage[]): AsyncGener
   let isFirst = true;
   let promptTokens = -1;
   let completionTokens = -1;
+  const genStart = Date.now();
 
   const baseChunk = () => ({
-    id: "chatcmpl-google",
-    object: "chat.completion.chunk",
-    created: Math.floor(Date.now() / 1000),
-    model,
-    system_fingerprint: "google-router",
+    id: "chatcmpl-google", object: "chat.completion.chunk",
+    created: Math.floor(Date.now() / 1000), model, system_fingerprint: "google-router",
   });
 
   try {
@@ -674,6 +683,10 @@ async function* streamGoogle(model: string, messages: ChatMessage[]): AsyncGener
           isFirst = false;
         }
         if (event.candidates?.[0]?.finishReason === "STOP") {
+          const elapsedSec = (Date.now() - genStart) / 1000;
+          if (completionTokens > 0 && elapsedSec > 0) {
+            TOKENS_PER_SEC_observe({ model }, completionTokens / elapsedSec);
+          }
           yield `data: ${JSON.stringify({
             ...baseChunk(),
             choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
@@ -726,13 +739,13 @@ async function handleChat(data: ChatRequest, reply: FastifyReply) {
     return reply.status(400).send({ error: { message: "messages required", type: "invalid_request_error" } });
   }
 
-  REQUEST_COUNT.labels({ model }).inc();
+  REQUEST_COUNT_inc({ model });
 
   // Inyectar skill si el modelo lo requiere
   const skillName = extractSkill(model);
   if (skillName) {
     messages = injectSkill(messages, skillName);
-    console.log(`[SKILL] Inyectando skill "${skillName}" en modelo "${model}"`);
+    console.log(`[SKILL] Inyectando "${skillName}" en "${model}"`);
   }
 
   if (!stream) {
@@ -741,9 +754,8 @@ async function handleChat(data: ChatRequest, reply: FastifyReply) {
   }
 
   const selected = await selectNode(model);
-
   if (!selected) {
-    ERROR_COUNT.inc();
+    ERROR_COUNT_inc();
     return reply.status(503).send({ error: "No nodes available" });
   }
 
@@ -757,12 +769,10 @@ async function handleChat(data: ChatRequest, reply: FastifyReply) {
       Connection: "keep-alive",
       "X-Accel-Buffering": "no",
     });
-
     const generator =
       selected.config.type === "anthropic" ? streamAnthropic(selected.model, messages) :
       selected.config.type === "google"    ? streamGoogle(selected.model, messages) :
                                              streamOllama(selected.config.url, selected.model, messages);
-
     for await (const chunk of generator) reply.raw.write(chunk);
     reply.raw.end();
     return;
@@ -770,27 +780,33 @@ async function handleChat(data: ChatRequest, reply: FastifyReply) {
 
   // ── NON-STREAM ───────────────────────────────────────────────
   const start = Date.now();
-
   const result =
     selected.config.type === "anthropic" ? await callAnthropic(selected.model, messages) :
     selected.config.type === "google"    ? await callGoogle(selected.model, messages) :
                                            await callOllama(selected.config.url, selected.model, messages);
 
-  REQUEST_LATENCY.labels({ model: selected.model }).observe((Date.now() - start) / 1000);
+  const elapsedSec = (Date.now() - start) / 1000;
+  REQUEST_LATENCY_observe({ model: selected.model }, elapsedSec);
 
   if (result.error) {
-    ERROR_COUNT.inc();
+    ERROR_COUNT_inc();
     return reply.status(500).send({ error: result.error });
   }
 
   const content = result.message?.content ?? "";
   if (!content.trim()) {
-    ERROR_COUNT.inc();
+    ERROR_COUNT_inc();
     return reply.status(502).send({ error: "Empty response from model" });
   }
 
+  // Tokens por segundo en non-stream
+  const completionTokens = result.eval_count ?? -1;
+  if (completionTokens > 0 && elapsedSec > 0) {
+    TOKENS_PER_SEC_observe({ model: selected.model }, completionTokens / elapsedSec);
+  }
+
   await setCache(messages, model, content);
-  return reply.send(openaiResponse(model, content, result.prompt_eval_count ?? -1, result.eval_count ?? -1));
+  return reply.send(openaiResponse(model, content, result.prompt_eval_count ?? -1, completionTokens));
 }
 
 // =========================
@@ -824,6 +840,9 @@ app.get("/skills", async (_req, reply) => {
 });
 
 app.get("/metrics", async (_req, reply) => {
+  if (!METRICS_ENABLED) {
+    return reply.status(404).send({ error: "Metrics disabled. Set METRICS_ENABLED=true to enable." });
+  }
   reply.header("Content-Type", registry.contentType);
   return reply.send(await registry.metrics());
 });
@@ -836,18 +855,24 @@ app.get("/health", async (_req, reply) => {
       online: config.type !== "ollama" ? true : (await getNodeLoad(config)) < 999,
     }))
   );
-  return reply.send({ status: "ok", nodes: nodeChecks, skills: Object.keys(SKILLS) });
+  return reply.send({
+    status: "ok",
+    nodes: nodeChecks,
+    skills: Object.keys(SKILLS),
+    cache: redisAvailable ? "redis" : "memory",
+    metrics: METRICS_ENABLED,
+  });
 });
 
 const PORT = parseInt(process.env.PORT ?? "8000", 10);
 
-// Cargar skills antes de arrancar
 loadSkills();
 
 app.listen({ port: PORT, host: "0.0.0.0" }, (err) => {
   if (err) { app.log.error(err); process.exit(1); }
   console.log(`🚀 Router running on http://0.0.0.0:${PORT}`);
-  console.log(`   Anthropic: ${ANTHROPIC_API_KEY ? "✅ configurado" : "❌ ANTHROPIC_API_KEY no definida"}`);
-  console.log(`   Google:    ${GOOGLE_API_KEY    ? "✅ configurado" : "❌ GOOGLE_API_KEY no definida"}`);
+  console.log(`   Anthropic: ${ANTHROPIC_API_KEY ? "✅ configurado" : "❌ no definida"}`);
+  console.log(`   Google:    ${GOOGLE_API_KEY    ? "✅ configurado" : "❌ no definida"}`);
+  console.log(`   Métricas:  ${METRICS_ENABLED   ? "✅ activas"     : "❌ desactivadas"}`);
   console.log(`   Skills:    ${Object.keys(SKILLS).length > 0 ? Object.keys(SKILLS).join(", ") : "ninguno"}`);
 });
