@@ -66,7 +66,7 @@ Para añadir un skill nuevo basta con crear un `.md` en `skills/` y reiniciar el
 ## Requisitos
 
 - Node.js 22+
-- Redis (opcional — si no está disponible usa caché en memoria)
+- Redis (opcional — si no está disponible usa caché en memoria automáticamente)
 - Al menos un nodo Ollama corriendo
 
 ## Instalación
@@ -172,35 +172,123 @@ El endpoint `/health` muestra qué caché está activa:
 | `llm_errors_total` | Errores totales |
 | `llm_redis_errors_total` | Errores de Redis |
 
+---
+
 ## Uso con Aider
 
+### Instalación
+
+**macOS / Linux:**
+
 ```bash
-# Instalar
-pip install aider-chat
+# Con pipx (recomendado)
+brew install pipx      # macOS
+pipx ensurepath
+pipx install aider-chat
 
-# Aliases recomendados en ~/.zshrc
-ROUTER="--openai-api-base http://router.casa.lan/v1 --openai-api-key none --no-show-model-warnings"
-alias aider-auto="aider $ROUTER --model openai/auto"
-alias aider-fast="aider $ROUTER --model openai/fast"
-alias aider-reason="aider $ROUTER --model openai/reasoning"
-alias aider-4070="aider $ROUTER --model openai/gpu4070-coder"
-alias aider-4070-reason="aider $ROUTER --model openai/gpu4070-reason"
-alias aider-gemini="aider $ROUTER --model openai/gemini-flash"
-alias aider-claude="aider $ROUTER --model openai/claude-sonnet"
-
-# Skills
-alias aider-angular="aider $ROUTER --model openai/angular-expert-gemini"
-alias aider-spring="aider $ROUTER --model openai/spring-expert-gemini"
-alias aider-debug="aider $ROUTER --model openai/debug-gemini"
-alias aider-refactor="aider $ROUTER --model openai/refactor-gemini"
-alias aider-web="aider $ROUTER --model openai/web-design-gemini"
+# Si tienes Python > 3.12 instala primero una versión compatible
+brew install pyenv
+pyenv install 3.11.9
+pyenv global 3.11.9
+pipx install aider-chat --python $(pyenv which python3)
 ```
+
+### Configurar aliases
+
+Los ficheros de aliases están en la carpeta `aliases/` del repo:
+
+**ZSH:**
+```bash
+echo "source $(pwd)/aliases/aliases.zsh" >> ~/.zshrc
+source ~/.zshrc
+```
+
+**Bash:**
+```bash
+echo "source $(pwd)/aliases/aliases.bash" >> ~/.bashrc
+source ~/.bashrc
+```
+
+### Aliases disponibles
+
+| Alias | Modelo | Cuándo usarlo |
+|---|---|---|
+| `aider-auto` | auto | Uso general, el router elige |
+| `aider-fast` | fast | Preguntas rápidas, snippets simples |
+| `aider-reason` | reasoning | Lógica compleja, arquitectura |
+| `aider-mac` | mac-fast | Forzar mac, modelo pequeño |
+| `aider-mac-coder` | mac-coder | Forzar mac, deepseek-coder 16b |
+| `aider-mac-reason` | mac-reason | Forzar mac, deepseek-r1 |
+| `aider-4070` | gpu4070-coder | GPU principal, deepseek-coder |
+| `aider-4070-reason` | gpu4070-reason | GPU principal, deepseek-r1 |
+| `aider-gemini` | gemini-flash | Google, rápido y gratuito |
+| `aider-gemini-pro` | gemini-pro | Google, máxima calidad |
+| `aider-claude` | claude-sonnet | Anthropic, mejor para código |
+| `aider-claude-opus` | claude-opus | Anthropic, máxima calidad |
+| `aider-angular` | angular-expert-gemini | Experto Angular 18 + SSR |
+| `aider-angular-local` | angular-expert-4070 | Ídem, sin cloud |
+| `aider-spring` | spring-expert-gemini | Experto Spring Boot |
+| `aider-spring-local` | spring-expert-4070 | Ídem, sin cloud |
+| `aider-debug` | debug-gemini | Análisis de errores y bugs |
+| `aider-debug-local` | debug-4070 | Ídem, sin cloud |
+| `aider-refactor` | refactor-gemini | Limpieza y mejora de código |
+| `aider-refactor-local` | refactor-4070 | Ídem, sin cloud |
+| `aider-web` | web-design-gemini | HTML/CSS/UX |
+| `aider-web-local` | web-design-4070 | Ídem, sin cloud |
+
+### Comandos útiles dentro de Aider
+
+```bash
+/add src/app/services/mi-servicio.ts    # añadir fichero al contexto
+/add src/app/**/*.service.ts            # añadir varios ficheros
+/ls                                      # ver ficheros en contexto
+/drop mi-servicio.ts                    # quitar fichero del contexto
+/diff                                   # ver cambios realizados
+/undo                                   # deshacer último cambio
+/model openai/gemini-flash              # cambiar modelo en mitad de sesión
+```
+
+### Flujo de trabajo recomendado
+
+```bash
+# 1. Entrar al proyecto
+cd ~/proyectos/mi-app
+
+# 2. Elegir el alias según la tarea
+aider-angular       # para componentes Angular
+aider-spring        # para servicios Spring Boot
+aider-debug         # para analizar un error
+
+# 3. Añadir los ficheros relevantes
+/add src/app/services/autofirma.service.ts
+
+# 4. Describir la tarea
+"el método firmarDocumento no gestiona bien el error AI600101, revísalo"
+```
+
+### Nota sobre modelos pequeños
+
+Los modelos pequeños (`fast`, `mac-fast`) no siguen bien el formato de edición de Aider. Si ves el error `The LLM did not conform to the edit format`, usa un modelo más capaz:
+
+```bash
+# En lugar de aider-auto, usa:
+aider-4070          # local potente
+aider-gemini        # cloud gratuito
+aider-claude        # cloud máxima calidad
+
+# O fuerza el modo de edición simple (más tokens, menos preciso):
+aider-auto --edit-format whole
+```
+
+---
 
 ## Uso con Open WebUI
 
 En **Settings → Admin → Connections → OpenAI API**:
 - URL: `http://router.casa.lan/v1`
 - API Key: `none`
+
+---
 
 ## Uso con curl
 
