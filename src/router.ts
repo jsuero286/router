@@ -112,8 +112,8 @@ const NODES: Record<string, NodeConfig> = {
   gpu4070: { url: "http://ai-gpu.casa.lan",  type: "ollama" },
   mac:     { url: "http://ai-mac.casa.lan",  type: "ollama" },
   // Proveedores cloud
-  claude:  { url: "https://api.anthropic.com",                  type: "anthropic" },
-  gemini:  { url: "https://generativelanguage.googleapis.com",  type: "google" },
+  claude:  { url: "https://api.anthropic.com",                 type: "anthropic" },
+  gemini:  { url: "https://generativelanguage.googleapis.com", type: "google" },
 };
 
 // =========================
@@ -121,39 +121,72 @@ const NODES: Record<string, NodeConfig> = {
 // =========================
 
 const MODEL_MAP: Record<string, NodeEntry[]> = {
-  // ── auto: locales primero, Google segundo, Anthropic último ─
+
+  // ── AUTOMÁTICOS (el router elige) ───────────────────────────
+
+  // auto: locales primero, Google segundo, Anthropic último
   auto: [
     { nodeName: "gpu5070", model: "qwen2.5-coder:7b" },
     { nodeName: "gpu4070", model: "deepseek-coder-v2:16b" },
     { nodeName: "mac",     model: "qwen2.5-coder:1.5b" },
-    { nodeName: "gemini",  model: "gemini-2.5-flash" },      // fallback 1
-    { nodeName: "claude",  model: "claude-sonnet-4-5" },     // fallback 2
+    { nodeName: "gemini",  model: "gemini-2.5-flash" },   // fallback 1
+    { nodeName: "claude",  model: "claude-sonnet-4-5" },  // fallback 2
   ],
-  // ── fast: solo locales rápidos ──────────────────────────────
+  // fast: solo locales rápidos
   fast: [
     { nodeName: "gpu5070", model: "qwen2.5-coder:7b" },
     { nodeName: "mac",     model: "qwen2.5-coder:1.5b" },
   ],
-  // ── reasoning: local + cloud como fallback ──────────────────
+  // reasoning: local + cloud como fallback
   reasoning: [
     { nodeName: "gpu4070", model: "deepseek-r1:14b" },
     { nodeName: "mac",     model: "deepseek-r1:14b" },
-    { nodeName: "gemini",  model: "gemini-2.5-pro" },        // fallback 1
-    { nodeName: "claude",  model: "claude-opus-4-5" },       // fallback 2
+    { nodeName: "gemini",  model: "gemini-2.5-pro" },    // fallback 1
+    { nodeName: "claude",  model: "claude-opus-4-5" },   // fallback 2
   ],
-  // ── deepseek-coder: solo local ──────────────────────────────
+  // deepseek-coder: solo local
   "deepseek-coder": [
     { nodeName: "gpu4070", model: "deepseek-coder-v2:16b" },
     { nodeName: "gpu5070", model: "deepseek-coder:6.7b-instruct-q4_K_M" },
   ],
-  // ── Claude directo ──────────────────────────────────────────
+
+  // ── NODOS ESPECÍFICOS (tú eliges) ───────────────────────────
+
+  // Mac
+  "mac-fast": [
+    { nodeName: "mac", model: "qwen2.5-coder:1.5b" },
+  ],
+  "mac-reason": [
+    { nodeName: "mac", model: "deepseek-r1:14b" },
+  ],
+
+  // GPU 5070
+  "gpu5070-fast": [
+    { nodeName: "gpu5070", model: "qwen2.5-coder:7b" },
+  ],
+  "gpu5070-coder": [
+    { nodeName: "gpu5070", model: "deepseek-coder:6.7b-instruct-q4_K_M" },
+  ],
+
+  // GPU 4070
+  "gpu4070-coder": [
+    { nodeName: "gpu4070", model: "deepseek-coder-v2:16b" },
+  ],
+  "gpu4070-reason": [
+    { nodeName: "gpu4070", model: "deepseek-r1:14b" },
+  ],
+
+  // ── CLOUD DIRECTO ────────────────────────────────────────────
+
+  // Anthropic
   "claude-sonnet": [
     { nodeName: "claude", model: "claude-sonnet-4-5" },
   ],
   "claude-opus": [
     { nodeName: "claude", model: "claude-opus-4-5" },
   ],
-  // ── Google directo ───────────────────────────────────────────
+
+  // Google
   "gemini-flash": [
     { nodeName: "gemini", model: "gemini-2.5-flash" },
   ],
@@ -169,7 +202,7 @@ const MODEL_MAP: Record<string, NodeEntry[]> = {
 const CACHE_TTL = 300;
 
 const redis = new Redis({
-  host: "redis.casa.lan",
+  host: "192.168.50.82",
   port: 6379,
   password: "hom795er",
   connectTimeout: 2000,
@@ -728,6 +761,10 @@ app.get("/v1/models", async (_req, reply) => {
   });
 });
 
+app.get("/v1", async (_req, reply) => {
+  return reply.send({ status: "ok" });
+});
+
 app.get("/metrics", async (_req, reply) => {
   reply.header("Content-Type", registry.contentType);
   return reply.send(await registry.metrics());
@@ -744,14 +781,7 @@ app.get("/health", async (_req, reply) => {
   return reply.send({ status: "ok", nodes: nodeChecks });
 });
 
-
-app.get("/v1", async (_req, reply) => {
-  return reply.send({ status: "ok" });
-});
-
-
 const PORT = parseInt(process.env.PORT ?? "8000", 10);
-
 
 app.listen({ port: PORT, host: "0.0.0.0" }, (err) => {
   if (err) { app.log.error(err); process.exit(1); }
