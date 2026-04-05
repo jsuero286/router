@@ -744,7 +744,14 @@ app.get("/health", async (_req, reply) => {
   return reply.send({ status: "ok", nodes: nodeChecks });
 });
 
+
+app.get("/v1", async (_req, reply) => {
+  return reply.send({ status: "ok" });
+});
+
+
 const PORT = parseInt(process.env.PORT ?? "8000", 10);
+
 
 app.listen({ port: PORT, host: "0.0.0.0" }, (err) => {
   if (err) { app.log.error(err); process.exit(1); }
