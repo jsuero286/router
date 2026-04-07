@@ -42,6 +42,17 @@ interface ChatRequest {
   model?: string;
   messages?: ChatMessage[];
   stream?: boolean;
+  user?: string; // campo estándar OpenAI — usado como hint de sesión si se proporciona
+}
+
+interface ConversationContext {
+  messages: ChatMessage[];
+  model: string;
+  skill: string | null;
+  totalCostUsd: number;
+  createdAt: number;
+  updatedAt: number;
+  turns: number;
 }
 
 interface OllamaResponse {
@@ -858,6 +869,46 @@ async function* streamGoogle(model: string, messages: ChatMessage[]): AsyncGener
 }
 
 // =========================
+// 💬 HISTORIAL DE CONVERSACIÓN
+// =========================
+
+const CONVERSATION_TTL       = parseInt(process.env.CONVERSATION_TTL ?? "3600", 10);
+const CONVERSATION_MAX_TURNS = parseInt(process.env.CONVERSATION_MAX_TURNS ?? "50", 10);
+
+function sessionId(apiKey: string, req: FastifyRequest): string {
+  const ip = (req.headers["x-forwarded-for"] as string ?? req.socket.remoteAddress ?? "unknown").split(",")[0].trim();
+  const ua = (req.headers["user-agent"] ?? "unknown").slice(0, 50);
+  const hint = (req.body as ChatRequest)?.user ?? "";
+  const raw = `${apiKey}:${ip}:${ua}:${hint}`;
+  return "conv:" + crypto.createHash("sha256").update(raw).digest("hex").slice(0, 16);
+}
+
+async function getConversation(sid: string): Promise<ConversationContext | null> {
+  if (!redisAvailable) return null;
+  try {
+    const raw = await redis.get(sid);
+    if (!raw) return null;
+    return JSON.parse(raw) as ConversationContext;
+  } catch {
+    return null;
+  }
+}
+
+async function saveConversation(sid: string, ctx: ConversationContext): Promise<void> {
+  if (!redisAvailable) return;
+  try {
+    await redis.setex(sid, CONVERSATION_TTL, JSON.stringify(ctx));
+  } catch (e) {
+    console.warn("[HISTORY] Error guardando conversación:", e);
+  }
+}
+
+async function deleteConversation(sid: string): Promise<void> {
+  if (!redisAvailable) return;
+  try { await redis.del(sid); } catch {}
+}
+
+// =========================
 // 🧠 CLASIFICADOR DE COMPLEJIDAD
 // =========================
 
@@ -977,7 +1028,7 @@ function openaiResponse(model: string, content: string, promptTokens = -1, compl
 // 🔥 CHAT HANDLER
 // =========================
 
-async function handleChat(data: ChatRequest, reply: FastifyReply) {
+async function handleChat(data: ChatRequest, reply: FastifyReply, req: FastifyRequest) {
   const model = data.model ?? "auto";
   let messages = data.messages ?? [];
   const stream = data.stream ?? false;
@@ -987,6 +1038,33 @@ async function handleChat(data: ChatRequest, reply: FastifyReply) {
   }
 
   REQUEST_COUNT_inc({ model });
+
+  // Recuperar o inicializar contexto de conversación
+  const apiKey = (req.headers["authorization"] ?? "").replace("Bearer ", "").trim();
+  const sid = sessionId(apiKey, req);
+  const ctx: ConversationContext = (await getConversation(sid)) ?? {
+    messages: [], model, skill: null, totalCostUsd: 0,
+    createdAt: Date.now(), updatedAt: Date.now(), turns: 0,
+  };
+
+  // Fusionar historial previo con los mensajes entrantes
+  const incomingUserMsgs = messages.filter((m) => m.role !== "system");
+  const systemMsg = messages.find((m) => m.role === "system");
+  if (incomingUserMsgs.length > 0) {
+    const lastIncoming = incomingUserMsgs[incomingUserMsgs.length - 1];
+    const alreadyInHistory = ctx.messages.some(
+        (m) => m.role === lastIncoming.role && m.content === lastIncoming.content
+    );
+    if (!alreadyInHistory) ctx.messages.push(...incomingUserMsgs);
+  }
+
+  // Reconstruir messages con historial completo + system prompt si existe
+  messages = [
+    ...(systemMsg ? [systemMsg] : []),
+    ...ctx.messages.slice(-(CONVERSATION_MAX_TURNS * 2)),
+  ];
+
+  console.log(`[HISTORY] sid=${sid.slice(5, 13)}… turns=${ctx.turns} msgs=${ctx.messages.length}`);
 
   // Clasificar complejidad si el alias es "auto"
   let resolvedModel = model;
@@ -1078,8 +1156,21 @@ async function handleChat(data: ChatRequest, reply: FastifyReply) {
       console.log(`[COST]  ${selected.model} ~$${cost.toFixed(6)}`);
     }
 
-    await setCache(messages, model, content, getSkillCacheTtl(skillName));
-    return reply.send(openaiResponse(model, content, inputTokens, completionTokens));
+    await setCache(messages, resolvedModel, content, getSkillCacheTtl(skillName));
+
+    // Actualizar historial de conversación
+    ctx.messages.push({ role: "assistant", content });
+    ctx.model      = selected.model;
+    ctx.skill      = skillName;
+    ctx.totalCostUsd += cost;
+    ctx.updatedAt  = Date.now();
+    ctx.turns     += 1;
+    await saveConversation(sid, ctx);
+
+    return reply.send({
+      ...openaiResponse(resolvedModel, content, inputTokens, completionTokens),
+      session_id: sid, // devuelto para referencia del cliente
+    });
   }
 
   // Todos los candidatos fallaron
@@ -1109,7 +1200,7 @@ app.addHook("onRequest", async (req, reply) => {
 });
 
 app.post("/v1/chat/completions", async (req: FastifyRequest, reply: FastifyReply) => {
-  return handleChat(req.body as ChatRequest, reply);
+  return handleChat(req.body as ChatRequest, reply, req);
 });
 
 app.get("/v1/models", async (_req, reply) => {
@@ -1140,6 +1231,22 @@ app.get("/metrics", async (_req, reply) => {
   }
   reply.header("Content-Type", registry.contentType);
   return reply.send(await registry.metrics());
+});
+
+app.get("/v1/conversation", async (req: FastifyRequest, reply: FastifyReply) => {
+  const apiKey = (req.headers["authorization"] ?? "").replace("Bearer ", "").trim();
+  const sid = sessionId(apiKey, req);
+  const ctx = await getConversation(sid);
+  if (!ctx) return reply.send({ session_id: sid, turns: 0, messages: [] });
+  return reply.send({ session_id: sid, ...ctx });
+});
+
+app.delete("/v1/conversation", async (req: FastifyRequest, reply: FastifyReply) => {
+  const apiKey = (req.headers["authorization"] ?? "").replace("Bearer ", "").trim();
+  const sid = sessionId(apiKey, req);
+  await deleteConversation(sid);
+  console.log(`[HISTORY] Conversación eliminada: ${sid.slice(5, 13)}…`);
+  return reply.send({ deleted: true, session_id: sid });
 });
 
 app.get("/health", async (_req, reply) => {
@@ -1238,6 +1345,7 @@ app.listen({ port: PORT, host: "0.0.0.0" }, (err) => {
   console.log(`   Keep-alive: ${OLLAMA_KEEP_ALIVE}${OLLAMA_NUM_CTX > 0 ? ` | ctx: ${OLLAMA_NUM_CTX}` : ""}`);
   console.log(`   Auth:       ✅ API key activa`);
   console.log(`   Classifier: ${CLASSIFIER_ENABLED ? `✅ ${CLASSIFIER_MODEL} @ ${CLASSIFIER_NODE_URL}` : "❌ desactivado (solo reglas)"}`);
+  console.log(`   History:    TTL ${CONVERSATION_TTL}s, max ${CONVERSATION_MAX_TURNS} turnos (requiere Redis)`);
   if (WARMUP_ON_START) {
     warmupAll().catch((e) => console.error("[WARMUP] Error inesperado:", e));
   }
