@@ -6,6 +6,8 @@ Router de carga para nodos Ollama, Anthropic y Google con API compatible OpenAI,
 
 Expone un endpoint `/v1/chat/completions` compatible con cualquier cliente OpenAI (Aider, Open WebUI, Continue...) y balancea las peticiones entre nodos Ollama locales y proveedores cloud según disponibilidad. Cada "modelo" virtual es un alias que mapea a un modelo real en el nodo más disponible en ese momento.
 
+El router mide la carga real de cada nodo Ollama mediante `/api/ps` (modelos activos en VRAM), ordena los candidatos de menor a mayor carga y reintenta automáticamente con el siguiente si un nodo falla durante la llamada. Si todos los nodos locales están offline, escala a los proveedores cloud configurados.
+
 ```
 Cliente (Aider / Open WebUI / curl)
               ↓
@@ -49,19 +51,40 @@ Cliente (Aider / Open WebUI / curl)
 
 ### Skills (se generan automáticamente desde `/skills/*.md`)
 
-Cada fichero `.md` en la carpeta `skills/` genera 5 modelos automáticamente:
+Cada fichero `.md` en la carpeta `skills/` genera modelos automáticamente. El alias directo `{skill}` usa la ruta preferida definida en el frontmatter:
 
 | Alias | Nodo |
 |---|---|
-| `{skill}-mac` | mac → deepseek-coder-v2:16b |
-| `{skill}-4070` | gpu4070 → deepseek-coder-v2:16b |
+| `{skill}` | preferred_node → preferred_model, luego fallback, luego cloud |
+| `{skill}-mac` | mac → preferred_model (o deepseek-coder-v2:16b por defecto) |
+| `{skill}-4070` | gpu4070 → fallback_model (o deepseek-coder-v2:16b por defecto) |
 | `{skill}-4070-reason` | gpu4070 → deepseek-r1:14b |
 | `{skill}-gemini` | gemini → gemini-2.5-flash |
 | `{skill}-claude` | claude → claude-sonnet-4-5 |
 
 Skills incluidos por defecto: `angular-expert`, `spring-expert`, `debug`, `refactor`, `web-design`.
 
-Para añadir un skill nuevo basta con crear un `.md` en `skills/` y reiniciar el servicio.
+#### Frontmatter opcional
+
+Cada `.md` puede incluir un bloque YAML al inicio para personalizar el routing y el TTL de caché:
+
+```markdown
+---
+preferred_node: gpu5070
+preferred_model: qwen2.5-coder:7b
+fallback_node: gpu4070
+fallback_model: deepseek-coder-v2:16b
+cloud_fallback: gemini-flash
+cache_ttl: 3600
+---
+Eres un experto en Spring Boot...
+```
+
+Todos los campos son opcionales. Sin frontmatter el comportamiento es idéntico al anterior.
+
+#### Hot-reload
+
+El router detecta cambios en la carpeta `skills/` automáticamente. No es necesario reiniciar el servicio al añadir, modificar o eliminar un `.md`.
 
 ## Requisitos
 
@@ -96,6 +119,15 @@ PORT=8000
 # API Keys de proveedores cloud
 ANTHROPIC_API_KEY=sk-ant-...
 GOOGLE_API_KEY=AIza...
+
+# Redis (opcional — si no está disponible usa caché en memoria)
+REDIS_HOST=192.168.50.82
+REDIS_PORT=6379
+REDIS_PASSWORD=
+
+# TTL global de caché en segundos (por defecto: 300)
+# Cada skill puede sobreescribirlo con cache_ttl en su frontmatter
+CACHE_TTL=300
 
 # Métricas Prometheus (true/false)
 METRICS_ENABLED=true
@@ -149,7 +181,9 @@ WantedBy=multi-user.target
 
 ## Caché
 
-El router usa Redis como caché principal. Si Redis no está disponible, cambia automáticamente a caché en memoria (máx. 200 entradas, TTL 300s) sin interrumpir el servicio.
+El router usa Redis como caché principal. Si Redis no está disponible, cambia automáticamente a caché en memoria (máx. 200 entradas) sin interrumpir el servicio.
+
+El TTL global es configurable con la variable `CACHE_TTL` (por defecto 300s). Cada skill puede sobreescribirlo individualmente con `cache_ttl` en su frontmatter.
 
 El endpoint `/health` muestra qué caché está activa:
 
@@ -168,9 +202,10 @@ El endpoint `/health` muestra qué caché está activa:
 | `llm_cache_hits_total` | Aciertos de caché |
 | `llm_cache_miss_total` | Fallos de caché |
 | `llm_node_selected_total` | Peticiones enrutadas por nodo |
-| `llm_node_load` | Carga actual de cada nodo |
+| `llm_node_load` | Carga actual de cada nodo (0 = libre, N = modelos activos en VRAM) |
 | `llm_errors_total` | Errores totales |
 | `llm_redis_errors_total` | Errores de Redis |
+| `llm_cost_usd_total` | Coste estimado acumulado en USD por modelo (solo cloud) |
 
 ---
 
