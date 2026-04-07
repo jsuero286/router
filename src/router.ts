@@ -16,6 +16,10 @@ const METRICS_ENABLED    = (process.env.METRICS_ENABLED ?? "true") === "true";
 const REDIS_HOST         = process.env.REDIS_HOST ?? "127.0.0.1";
 const REDIS_PORT         = parseInt(process.env.REDIS_PORT ?? "6379", 10);
 const REDIS_PASSWORD     = process.env.REDIS_PASSWORD ?? undefined;
+const CACHE_TTL          = parseInt(process.env.CACHE_TTL ?? "300", 10);
+const OLLAMA_KEEP_ALIVE  = process.env.OLLAMA_KEEP_ALIVE ?? "1h";
+const OLLAMA_NUM_CTX     = parseInt(process.env.OLLAMA_NUM_CTX ?? "0", 10); // 0 = usar default del modelo
+const WARMUP_ON_START    = (process.env.WARMUP_ON_START ?? "true") === "true";
 
 // =========================
 // 🔧 TYPES
@@ -53,6 +57,26 @@ interface NodeConfig {
 }
 
 // =========================
+// 💰 COSTE ESTIMADO
+// =========================
+
+const TOKEN_COST_USD: Record<string, { input: number; output: number }> = {
+  // Anthropic
+  "claude-sonnet-4-5": { input: 3.00,  output: 15.00 },
+  "claude-opus-4-5":   { input: 15.00, output: 75.00 },
+  // Google
+  "gemini-2.5-flash":  { input: 0.075, output: 0.30  },
+  "gemini-2.5-pro":    { input: 1.25,  output: 10.00 },
+  // Ollama — coste 0 (local)
+};
+
+function estimateCostUsd(model: string, inputTokens: number, outputTokens: number): number {
+  const pricing = TOKEN_COST_USD[model];
+  if (!pricing || inputTokens < 0 || outputTokens < 0) return 0;
+  return (inputTokens * pricing.input + outputTokens * pricing.output) / 1_000_000;
+}
+
+// =========================
 // 📊 MÉTRICAS (configurables)
 // =========================
 
@@ -71,6 +95,7 @@ let NODE_SELECTED_inc:       (labels: { node: string }) => void;
 let NODE_LOAD_set:           (labels: { node: string }, value: number) => void;
 let REDIS_ERRORS_inc:        () => void;
 let TOKENS_PER_SEC_observe:  (labels: { model: string }, value: number) => void;
+let COST_USD_inc:            (labels: { model: string }, value: number) => void;
 
 if (METRICS_ENABLED) {
   collectDefaultMetrics({ register: registry });
@@ -109,6 +134,10 @@ if (METRICS_ENABLED) {
     buckets: [1, 5, 10, 20, 30, 50, 75, 100, 150, 200],
     registers: [registry],
   });
+  const COST_USD = new Counter({
+    name: "llm_cost_usd_total", help: "Estimated cost in USD",
+    labelNames: ["model"] as const, registers: [registry],
+  });
 
   REQUEST_COUNT_inc       = (l) => REQUEST_COUNT.labels(l).inc();
   REQUEST_LATENCY_observe = (l, v) => REQUEST_LATENCY.labels(l).observe(v);
@@ -119,6 +148,7 @@ if (METRICS_ENABLED) {
   NODE_LOAD_set           = (l, v) => NODE_LOAD.labels(l).set(v);
   REDIS_ERRORS_inc        = () => REDIS_ERRORS.inc();
   TOKENS_PER_SEC_observe  = (l, v) => TOKENS_PER_SEC.labels(l).observe(v);
+  COST_USD_inc            = (l, v) => COST_USD.labels(l).inc(v);
 } else {
   REQUEST_COUNT_inc       = noop;
   REQUEST_LATENCY_observe = noop;
@@ -129,6 +159,7 @@ if (METRICS_ENABLED) {
   NODE_LOAD_set           = noop;
   REDIS_ERRORS_inc        = noop;
   TOKENS_PER_SEC_observe  = noop;
+  COST_USD_inc            = noop;
 }
 
 // =========================
@@ -183,11 +214,73 @@ const BASE_MODEL_MAP: Record<string, NodeEntry[]> = {
 };
 
 // =========================
-// 🧠 SKILLS — carga dinámica
+// 🧠 SKILLS — carga dinámica con frontmatter YAML
 // =========================
 
-const SKILLS: Record<string, string> = {};
+interface SkillFrontmatter {
+  preferred_node?: string;   // e.g. "gpu5070"
+  preferred_model?: string;  // e.g. "qwen2.5-coder:7b"
+  fallback_node?: string;    // e.g. "gpu4070"
+  fallback_model?: string;   // e.g. "deepseek-coder-v2:16b"
+  cloud_fallback?: string;   // alias del MODEL_MAP: "gemini-flash" | "claude-sonnet" | ...
+  cache_ttl?: number;        // segundos, sobreescribe CACHE_TTL global
+}
+
+interface SkillEntry {
+  prompt: string;
+  frontmatter: SkillFrontmatter;
+}
+
+const SKILLS: Record<string, SkillEntry> = {};
 let MODEL_MAP: Record<string, NodeEntry[]> = { ...BASE_MODEL_MAP };
+
+// TTL por skill (sobreescribe el global si el frontmatter lo define)
+const SKILL_CACHE_TTL: Record<string, number> = {};
+
+function parseFrontmatter(raw: string): { frontmatter: SkillFrontmatter; body: string } {
+  const match = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
+  if (!match) return { frontmatter: {}, body: raw.trim() };
+
+  const fm: SkillFrontmatter = {};
+  for (const line of match[1].split(/\r?\n/)) {
+    const [key, ...rest] = line.split(":");
+    if (!key || rest.length === 0) continue;
+    const k = key.trim() as keyof SkillFrontmatter;
+    const v = rest.join(":").trim();
+    if (k === "cache_ttl") {
+      const n = parseInt(v, 10);
+      if (!isNaN(n)) (fm as any)[k] = n;
+    } else {
+      (fm as any)[k] = v;
+    }
+  }
+  return { frontmatter: fm, body: match[2].trim() };
+}
+
+function buildSkillModelMap(skillName: string, fm: SkillFrontmatter): void {
+  // Ruta principal: nodo preferido del frontmatter o defaults
+  const primaryNode   = fm.preferred_node  ?? "mac";
+  const primaryModel  = fm.preferred_model ?? "deepseek-coder-v2:16b";
+  const fallbackNode  = fm.fallback_node   ?? "gpu4070";
+  const fallbackModel = fm.fallback_model  ?? "deepseek-coder-v2:16b";
+
+  // Alias directo: usa la ruta preferida + fallback local + cloud
+  const cloudAlias    = fm.cloud_fallback ?? "gemini-flash";
+  const cloudEntries  = BASE_MODEL_MAP[cloudAlias] ?? BASE_MODEL_MAP["gemini-flash"] ?? [];
+
+  MODEL_MAP[skillName] = [
+    { nodeName: primaryNode,  model: primaryModel  },
+    { nodeName: fallbackNode, model: fallbackModel },
+    ...cloudEntries,
+  ];
+
+  // Aliases explícitos (retrocompatibles)
+  MODEL_MAP[`${skillName}-mac`]         = [{ nodeName: "mac",     model: primaryModel }];
+  MODEL_MAP[`${skillName}-4070`]        = [{ nodeName: "gpu4070", model: fallbackModel }];
+  MODEL_MAP[`${skillName}-4070-reason`] = [{ nodeName: "gpu4070", model: "deepseek-r1:14b" }];
+  MODEL_MAP[`${skillName}-gemini`]      = [{ nodeName: "gemini",  model: "gemini-2.5-flash" }];
+  MODEL_MAP[`${skillName}-claude`]      = [{ nodeName: "claude",  model: "claude-sonnet-4-5" }];
+}
 
 function loadSkills(): void {
   if (!fs.existsSync(SKILLS_DIR)) {
@@ -199,16 +292,28 @@ function loadSkills(): void {
     console.log(`[SKILLS] No se encontraron ficheros .md en ${SKILLS_DIR}`);
     return;
   }
+
+  // Reset para hot-reload limpio
+  MODEL_MAP = { ...BASE_MODEL_MAP };
+  for (const key of Object.keys(SKILLS)) delete SKILLS[key];
+
   for (const file of files) {
     const skillName = path.basename(file, ".md");
-    const content = fs.readFileSync(path.join(SKILLS_DIR, file), "utf-8").trim();
-    SKILLS[skillName] = content;
-    MODEL_MAP[`${skillName}-mac`]         = [{ nodeName: "mac",     model: "deepseek-coder-v2:16b" }];
-    MODEL_MAP[`${skillName}-4070`]        = [{ nodeName: "gpu4070", model: "deepseek-coder-v2:16b" }];
-    MODEL_MAP[`${skillName}-4070-reason`] = [{ nodeName: "gpu4070", model: "deepseek-r1:14b" }];
-    MODEL_MAP[`${skillName}-gemini`]      = [{ nodeName: "gemini",  model: "gemini-2.5-flash" }];
-    MODEL_MAP[`${skillName}-claude`]      = [{ nodeName: "claude",  model: "claude-sonnet-4-5" }];
-    console.log(`[SKILLS] ✅ ${skillName} → mac, 4070, 4070-reason, gemini, claude`);
+    const raw = fs.readFileSync(path.join(SKILLS_DIR, file), "utf-8");
+    const { frontmatter, body } = parseFrontmatter(raw);
+
+    SKILLS[skillName] = { prompt: body, frontmatter };
+    buildSkillModelMap(skillName, frontmatter);
+
+    if (frontmatter.cache_ttl) {
+      SKILL_CACHE_TTL[skillName] = frontmatter.cache_ttl;
+    }
+
+    const pNode  = frontmatter.preferred_node  ?? "mac (default)";
+    const pModel = frontmatter.preferred_model ?? "deepseek-coder-v2:16b (default)";
+    const cloud  = frontmatter.cloud_fallback  ?? "gemini-flash (default)";
+    const ttl    = frontmatter.cache_ttl       ? `${frontmatter.cache_ttl}s` : `${CACHE_TTL}s (global)`;
+    console.log(`[SKILLS] ✅ ${skillName} → ${pNode}/${pModel}, cloud: ${cloud}, ttl: ${ttl}`);
   }
 }
 
@@ -222,8 +327,9 @@ function extractSkill(modelAlias: string): string | null {
 }
 
 function injectSkill(messages: ChatMessage[], skillName: string): ChatMessage[] {
-  const systemPrompt = SKILLS[skillName];
-  if (!systemPrompt) return messages;
+  const skill = SKILLS[skillName];
+  if (!skill) return messages;
+  const systemPrompt = skill.prompt;
   const hasSystem = messages.some((m) => m.role === "system");
   if (hasSystem) {
     return messages.map((m) =>
@@ -233,11 +339,14 @@ function injectSkill(messages: ChatMessage[], skillName: string): ChatMessage[] 
   return [{ role: "system", content: systemPrompt }, ...messages];
 }
 
+function getSkillCacheTtl(skillName: string | null): number {
+  if (skillName && SKILL_CACHE_TTL[skillName]) return SKILL_CACHE_TTL[skillName];
+  return CACHE_TTL;
+}
+
 // =========================
 // 🧠 CACHE — Redis + fallback memoria
 // =========================
-
-const CACHE_TTL = 300;
 
 // Cache en memoria como fallback
 const memCache = new Map<string, { value: string; expires: number }>();
@@ -313,12 +422,12 @@ async function getCache(messages: ChatMessage[], model: string): Promise<string 
   return null;
 }
 
-async function setCache(messages: ChatMessage[], model: string, value: string): Promise<void> {
+async function setCache(messages: ChatMessage[], model: string, value: string, ttl = CACHE_TTL): Promise<void> {
   const key = cacheKey(messages, model);
 
   if (redisAvailable) {
     try {
-      await redis.setex(key, CACHE_TTL, value);
+      await redis.setex(key, ttl, value);
       return;
     } catch (e) {
       REDIS_ERRORS_inc();
@@ -327,22 +436,34 @@ async function setCache(messages: ChatMessage[], model: string, value: string): 
     }
   }
 
-  // Fallback a memoria
-  memCacheSet(key, value);
+  // Fallback a memoria (respeta ttl)
+  memCache.set(key, { value, expires: Date.now() + ttl * 1000 });
 }
 
 // =========================
 // ⚡ NODE LOAD
 // =========================
 
+interface OllamaPsModel {
+  name: string;
+  size_vram?: number;
+  expires_at?: string;
+}
+
+interface OllamaPsResponse {
+  models: OllamaPsModel[];
+}
+
 async function getNodeLoad(nodeConfig: NodeConfig): Promise<number> {
-  if (nodeConfig.type !== "ollama") return 1;
+  if (nodeConfig.type !== "ollama") return 0;
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 2000);
-    const res = await fetch(`${nodeConfig.url}/api/tags`, { signal: controller.signal });
-    clearTimeout(timeout);
-    return res.ok ? 1 : 999;
+    const res = await fetch(`${nodeConfig.url}/api/ps`, {
+      signal: AbortSignal.timeout(2000),
+    });
+    if (!res.ok) return 999;
+    const data = (await res.json()) as OllamaPsResponse;
+    // 0 = libre, 1+ = modelos activos en VRAM (ocupado)
+    return data.models?.length ?? 0;
   } catch {
     return 999;
   }
@@ -358,12 +479,15 @@ interface SelectedNode {
   config: NodeConfig;
 }
 
-async function selectNode(modelAlias: string): Promise<SelectedNode | null> {
+// Devuelve la lista de candidatos ordenada: primero ollama por carga, luego cloud
+async function selectCandidates(modelAlias: string): Promise<SelectedNode[]> {
   const entries = MODEL_MAP[modelAlias];
-  if (!entries || entries.length === 0) return null;
+  if (!entries || entries.length === 0) return [];
 
   const ollamaEntries = entries.filter((e) => NODES[e.nodeName]?.type === "ollama");
   const cloudEntries  = entries.filter((e) => NODES[e.nodeName]?.type !== "ollama");
+
+  const candidates: SelectedNode[] = [];
 
   if (ollamaEntries.length > 0) {
     const loadResults = await Promise.all(
@@ -372,21 +496,22 @@ async function selectNode(modelAlias: string): Promise<SelectedNode | null> {
           if (!config) return { entry, config: null, load: 999 };
           const load = await getNodeLoad(config);
           NODE_LOAD_set({ node: entry.nodeName }, load);
+          const status = load === 999 ? "❌ offline" : load === 0 ? "✅ libre" : `⚙️  ocupado (${load} modelo/s)`;
+          console.log(`[LOAD]  ${entry.nodeName.padEnd(10)} ${status}`);
           return { entry, config, load };
         })
     );
 
-    let bestNode: SelectedNode | null = null;
-    let bestLoad = Infinity;
-    for (const { entry, config, load } of loadResults) {
-      if (config && load < bestLoad) {
-        bestLoad = load;
-        bestNode = { nodeName: entry.nodeName, model: entry.model, config };
-      }
+    const available = loadResults
+        .filter(({ load }) => load < 999)
+        .sort((a, b) => a.load - b.load);
+
+    if (available.length === 0) {
+      console.warn("[ROUTING] Todos los nodos Ollama offline, escalando a cloud");
     }
-    if (bestNode) {
-      NODE_SELECTED_inc({ node: bestNode.nodeName });
-      return bestNode;
+
+    for (const { entry, config } of available) {
+      if (config) candidates.push({ nodeName: entry.nodeName, model: entry.model, config });
     }
   }
 
@@ -395,11 +520,18 @@ async function selectNode(modelAlias: string): Promise<SelectedNode | null> {
     if (!config) continue;
     if (config.type === "anthropic" && !ANTHROPIC_API_KEY) continue;
     if (config.type === "google" && !GOOGLE_API_KEY) continue;
-    NODE_SELECTED_inc({ node: entry.nodeName });
-    return { nodeName: entry.nodeName, model: entry.model, config };
+    candidates.push({ nodeName: entry.nodeName, model: entry.model, config });
   }
 
-  return null;
+  return candidates;
+}
+
+// Compat: devuelve el primer candidato (usado internamente si no se necesita retry)
+async function selectNode(modelAlias: string): Promise<SelectedNode | null> {
+  const candidates = await selectCandidates(modelAlias);
+  if (candidates.length === 0) return null;
+  NODE_SELECTED_inc({ node: candidates[0].nodeName });
+  return candidates[0];
 }
 
 // =========================
@@ -410,7 +542,11 @@ async function callOllama(nodeUrl: string, model: string, messages: ChatMessage[
   const res = await fetch(`${nodeUrl}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model, messages, stream: false }),
+    body: JSON.stringify({
+      model, messages, stream: false,
+      keep_alive: OLLAMA_KEEP_ALIVE,
+      ...(OLLAMA_NUM_CTX > 0 ? { options: { num_ctx: OLLAMA_NUM_CTX } } : {}),
+    }),
     signal: AbortSignal.timeout(120_000),
   });
   if (!res.ok) return { error: `HTTP ${res.status}: ${await res.text()}` };
@@ -483,7 +619,11 @@ async function* streamOllama(nodeUrl: string, model: string, messages: ChatMessa
   const res = await fetch(`${nodeUrl}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model, messages, stream: true }),
+    body: JSON.stringify({
+      model, messages, stream: true,
+      keep_alive: OLLAMA_KEEP_ALIVE,
+      ...(OLLAMA_NUM_CTX > 0 ? { options: { num_ctx: OLLAMA_NUM_CTX } } : {}),
+    }),
     signal: AbortSignal.timeout(300_000),
   });
   if (!res.body) { yield `data: ${JSON.stringify({ error: "No response body" })}\n\n`; return; }
@@ -756,16 +896,17 @@ async function handleChat(data: ChatRequest, reply: FastifyReply) {
     if (cached) return reply.send(openaiResponse(model, cached));
   }
 
-  const selected = await selectNode(model);
-  if (!selected) {
+  const candidates = await selectCandidates(model);
+  if (candidates.length === 0) {
     ERROR_COUNT_inc();
     return reply.status(503).send({ error: "No nodes available" });
   }
 
-  console.log(`[ROUTER] ${model} → ${selected.model} @ ${selected.nodeName} (${selected.config.type})`);
-
-  // ── STREAM ──────────────────────────────────────────────────
+  // ── STREAM (sin retry: los headers ya se enviaron) ───────────
   if (stream) {
+    const selected = candidates[0];
+    NODE_SELECTED_inc({ node: selected.nodeName });
+    console.log(`[ROUTER] ${model} → ${selected.model} @ ${selected.nodeName} (stream)`);
     reply.raw.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
@@ -781,35 +922,55 @@ async function handleChat(data: ChatRequest, reply: FastifyReply) {
     return;
   }
 
-  // ── NON-STREAM ───────────────────────────────────────────────
-  const start = Date.now();
-  const result =
-      selected.config.type === "anthropic" ? await callAnthropic(selected.model, messages) :
-          selected.config.type === "google"    ? await callGoogle(selected.model, messages) :
-              await callOllama(selected.config.url, selected.model, messages);
+  // ── NON-STREAM con retry automático ─────────────────────────
+  for (const selected of candidates) {
+    console.log(`[ROUTER] ${model} → ${selected.model} @ ${selected.nodeName} (${selected.config.type})`);
+    const start = Date.now();
+    let result: OllamaResponse;
+    try {
+      result =
+          selected.config.type === "anthropic" ? await callAnthropic(selected.model, messages) :
+              selected.config.type === "google"    ? await callGoogle(selected.model, messages) :
+                  await callOllama(selected.config.url, selected.model, messages);
+    } catch (err) {
+      console.warn(`[RETRY] ${selected.nodeName} lanzó excepción: ${err} — probando siguiente`);
+      continue;
+    }
 
-  const elapsedSec = (Date.now() - start) / 1000;
-  REQUEST_LATENCY_observe({ model: selected.model }, elapsedSec);
+    if (result.error) {
+      console.warn(`[RETRY] ${selected.nodeName} devolvió error: ${result.error} — probando siguiente`);
+      continue;
+    }
 
-  if (result.error) {
-    ERROR_COUNT_inc();
-    return reply.status(500).send({ error: result.error });
+    const content = result.message?.content ?? "";
+    if (!content.trim()) {
+      console.warn(`[RETRY] ${selected.nodeName} devolvió respuesta vacía — probando siguiente`);
+      continue;
+    }
+
+    // Éxito
+    NODE_SELECTED_inc({ node: selected.nodeName });
+    const elapsedSec = (Date.now() - start) / 1000;
+    REQUEST_LATENCY_observe({ model: selected.model }, elapsedSec);
+
+    const inputTokens     = result.prompt_eval_count ?? -1;
+    const completionTokens = result.eval_count ?? -1;
+    if (completionTokens > 0 && elapsedSec > 0) {
+      TOKENS_PER_SEC_observe({ model: selected.model }, completionTokens / elapsedSec);
+    }
+    const cost = estimateCostUsd(selected.model, inputTokens, completionTokens);
+    if (cost > 0) {
+      COST_USD_inc({ model: selected.model }, cost);
+      console.log(`[COST]  ${selected.model} ~$${cost.toFixed(6)}`);
+    }
+
+    await setCache(messages, model, content, getSkillCacheTtl(skillName));
+    return reply.send(openaiResponse(model, content, inputTokens, completionTokens));
   }
 
-  const content = result.message?.content ?? "";
-  if (!content.trim()) {
-    ERROR_COUNT_inc();
-    return reply.status(502).send({ error: "Empty response from model" });
-  }
-
-  // Tokens por segundo en non-stream
-  const completionTokens = result.eval_count ?? -1;
-  if (completionTokens > 0 && elapsedSec > 0) {
-    TOKENS_PER_SEC_observe({ model: selected.model }, completionTokens / elapsedSec);
-  }
-
-  await setCache(messages, model, content);
-  return reply.send(openaiResponse(model, content, result.prompt_eval_count ?? -1, completionTokens));
+  // Todos los candidatos fallaron
+  ERROR_COUNT_inc();
+  return reply.status(502).send({ error: "All nodes failed" });
 }
 
 // =========================
@@ -835,9 +996,11 @@ app.get("/v1", async (_req, reply) => {
 
 app.get("/skills", async (_req, reply) => {
   return reply.send({
-    skills: Object.keys(SKILLS).map((name) => ({
+    skills: Object.entries(SKILLS).map(([name, skill]) => ({
       name,
-      models: [`${name}-mac`, `${name}-4070`, `${name}-4070-reason`, `${name}-gemini`, `${name}-claude`],
+      frontmatter: skill.frontmatter,
+      cache_ttl: SKILL_CACHE_TTL[name] ?? CACHE_TTL,
+      models: [name, `${name}-mac`, `${name}-4070`, `${name}-4070-reason`, `${name}-gemini`, `${name}-claude`],
     })),
   });
 });
@@ -871,12 +1034,80 @@ const PORT = parseInt(process.env.PORT ?? "8000", 10);
 
 loadSkills();
 
+// Hot-reload: recarga skills automáticamente al detectar cambios en el directorio
+if (fs.existsSync(SKILLS_DIR)) {
+  let reloadDebounce: ReturnType<typeof setTimeout> | null = null;
+  fs.watch(SKILLS_DIR, (_event, filename) => {
+    if (!filename?.endsWith(".md")) return;
+    if (reloadDebounce) clearTimeout(reloadDebounce);
+    reloadDebounce = setTimeout(() => {
+      console.log(`[SKILLS] Cambio detectado en "${filename}" — recargando skills...`);
+      loadSkills();
+      console.log(`[SKILLS] Skills recargadas: ${Object.keys(SKILLS).join(", ") || "ninguna"}`);
+    }, 300); // debounce 300ms por si el editor escribe en varios pasos
+  });
+  console.log(`[SKILLS] 👀 Watching ${SKILLS_DIR}`);
+}
+
+// =========================
+// 🔥 WARMUP
+// =========================
+
+async function warmupNode(nodeName: string, nodeUrl: string, model: string): Promise<void> {
+  try {
+    const res = await fetch(`${nodeUrl}/api/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model, prompt: "", keep_alive: OLLAMA_KEEP_ALIVE }),
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (res.ok) {
+      console.log(`[WARMUP] ✅ ${nodeName} → ${model} cargado en VRAM`);
+    } else {
+      console.warn(`[WARMUP] ⚠️  ${nodeName} → ${model} HTTP ${res.status}`);
+    }
+  } catch (err) {
+    console.warn(`[WARMUP] ❌ ${nodeName} → ${model} no disponible: ${err}`);
+  }
+}
+
+async function warmupAll(): Promise<void> {
+  // Recoge el modelo principal de cada nodo Ollama mirando el alias "auto"
+  // y los alias de nodo explícitos del MODEL_MAP
+  const toWarm = new Map<string, { url: string; model: string }>();
+
+  for (const [alias, entries] of Object.entries(MODEL_MAP)) {
+    for (const entry of entries) {
+      const config = NODES[entry.nodeName];
+      if (!config || config.type !== "ollama") continue;
+      const key = `${entry.nodeName}:${entry.model}`;
+      if (!toWarm.has(key)) {
+        toWarm.set(key, { url: config.url, model: entry.model });
+      }
+    }
+  }
+
+  console.log(`[WARMUP] Precalentando ${toWarm.size} modelo/s en nodos Ollama...`);
+  await Promise.allSettled(
+      [...toWarm.entries()].map(([key, { url, model }]) => {
+        const nodeName = key.split(":")[0];
+        return warmupNode(nodeName, url, model);
+      })
+  );
+  console.log("[WARMUP] Completado");
+}
+
 app.listen({ port: PORT, host: "0.0.0.0" }, (err) => {
   if (err) { app.log.error(err); process.exit(1); }
   console.log(`🚀 Router running on http://0.0.0.0:${PORT}`);
   console.log(`   Anthropic: ${ANTHROPIC_API_KEY ? "✅ configurado" : "❌ no definida"}`);
   console.log(`   Google:    ${GOOGLE_API_KEY    ? "✅ configurado" : "❌ no definida"}`);
   console.log(`   Redis:     ${REDIS_HOST}:${REDIS_PORT}`);
+  console.log(`   Cache TTL: ${CACHE_TTL}s (global)`);
   console.log(`   Métricas:  ${METRICS_ENABLED   ? "✅ activas"     : "❌ desactivadas"}`);
   console.log(`   Skills:    ${Object.keys(SKILLS).length > 0 ? Object.keys(SKILLS).join(", ") : "ninguno"}`);
+  console.log(`   Keep-alive: ${OLLAMA_KEEP_ALIVE}${OLLAMA_NUM_CTX > 0 ? ` | ctx: ${OLLAMA_NUM_CTX}` : ""}`);
+  if (WARMUP_ON_START) {
+    warmupAll().catch((e) => console.error("[WARMUP] Error inesperado:", e));
+  }
 });

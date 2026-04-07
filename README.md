@@ -102,6 +102,11 @@ METRICS_ENABLED=true
 
 # Carpeta de skills (por defecto: ./skills)
 SKILLS_DIR=/opt/llm-router/skills
+
+# Optimización de velocidad Ollama
+OLLAMA_KEEP_ALIVE=1h     # tiempo que el modelo permanece en VRAM tras la última petición (-1 = siempre)
+OLLAMA_NUM_CTX=0         # tamaño de contexto (0 = usa el default del modelo)
+WARMUP_ON_START=true     # precalentar modelos en VRAM al arrancar el router
 ```
 
 Los nodos y modelos se configuran directamente en `src/router.ts`:
@@ -114,6 +119,47 @@ const NODES: Record<string, NodeConfig> = {
   claude:  { url: "https://api.anthropic.com",                 type: "anthropic" },
   gemini:  { url: "https://generativelanguage.googleapis.com", type: "google" },
 };
+```
+
+## Optimización de velocidad (Ollama)
+
+### Keep-alive — evitar cold starts
+
+Por defecto Ollama descarga el modelo de VRAM si no recibe peticiones durante 5 minutos. El router envía `keep_alive` en cada llamada para mantenerlo cargado:
+
+```bash
+OLLAMA_KEEP_ALIVE=1h   # mantener 1 hora tras la última petición
+OLLAMA_KEEP_ALIVE=-1   # nunca descargar (recomendado si tienes VRAM suficiente)
+```
+
+### Warmup al arrancar
+
+Con `WARMUP_ON_START=true` (por defecto) el router envía una petición vacía a todos los nodos Ollama al arrancar, cargando los modelos en VRAM antes de que llegue la primera petición real. En los logs verás:
+
+```
+[WARMUP] Precalentando 6 modelo/s en nodos Ollama...
+[WARMUP] ✅ gpu5070 → qwen2.5-coder:7b cargado en VRAM
+[WARMUP] ✅ gpu4070 → deepseek-coder-v2:16b cargado en VRAM
+[WARMUP] Completado
+```
+
+### Contexto (`OLLAMA_NUM_CTX`)
+
+El tamaño de contexto afecta directamente a la velocidad y el uso de VRAM. Por defecto usa el valor del modelo, pero puedes reducirlo para respuestas más rápidas:
+
+```bash
+OLLAMA_NUM_CTX=4096   # suficiente para la mayoría de tareas de código
+OLLAMA_NUM_CTX=8192   # para ficheros grandes con Aider
+OLLAMA_NUM_CTX=0      # default del modelo (sin restricción)
+```
+
+### Variables de entorno en Ollama
+
+Estas variables se configuran en el servicio de Ollama (no en el router):
+
+```bash
+OLLAMA_FLASH_ATTENTION=1   # reduce VRAM y mejora velocidad en contextos largos
+OLLAMA_NUM_PARALLEL=2      # peticiones simultáneas por modelo (requiere más VRAM)
 ```
 
 ## Servicio systemd
@@ -309,3 +355,13 @@ curl http://router.casa.lan/skills
 # Estado del sistema
 curl http://router.casa.lan/health
 ```
+
+---
+
+## Licencia
+
+MIT License (Non-Commercial) — © 2025 [Jesús Suero](https://github.com/jsuero286)
+
+Puedes usar, modificar y distribuir este proyecto libremente para uso **no comercial**, siempre que mantengas la atribución al autor original. Para uso comercial contacta al autor a través de GitHub.
+
+Ver [`LICENSE`](./LICENSE) para el texto completo.
