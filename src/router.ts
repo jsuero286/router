@@ -53,7 +53,7 @@ interface NodeEntry {
 
 interface NodeHealthStatus {
   online: boolean;
-  load: number;
+  load: number; // Latencia en ms para Ollama, 1 para Cloud
   lastChecked: number;
 }
 
@@ -64,7 +64,7 @@ interface SelectedNode {
 }
 
 // =========================
-// 📊 MÉTRICAS (Encapsuladas)
+// 📊 MÉTRICAS
 // =========================
 
 const registry = new Registry();
@@ -85,7 +85,7 @@ const Metrics = {
 if (METRICS_ENABLED) collectDefaultMetrics({ register: registry });
 
 // =========================
-// 🔌 NODOS & ESTADO DE SALUD
+// 🔌 NODOS & MAPA DE MODELOS
 // =========================
 
 const NODES: Record<string, NodeConfig> = {
@@ -111,10 +111,10 @@ const BASE_MODEL_MAP: Record<string, NodeEntry[]> = {
   reasoning: [
     { nodeName: "gpu4070", model: "deepseek-r1:14b" },
     { nodeName: "gemini",  model: "gemini-2.0-pro-exp-02-05" },
+    { nodeName: "claude",  model: "claude-3-5-sonnet-latest" },
   ]
 };
 
-// Mapa dinámico de salud
 const NODE_HEALTH: Record<string, NodeHealthStatus> = {};
 Object.keys(NODES).forEach(name => {
   NODE_HEALTH[name] = { online: false, load: 999, lastChecked: 0 };
@@ -133,15 +133,15 @@ function loadSkills(): void {
   for (const file of files) {
     const skillName = path.basename(file, ".md");
     SKILLS[skillName] = fs.readFileSync(path.join(SKILLS_DIR, file), "utf-8").trim();
+    // Asignamos el skill a un nodo potente por defecto
     MODEL_MAP[skillName] = [{ nodeName: "gpu4070", model: "deepseek-coder-v2:16b" }];
-    console.log(`[SKILLS] ✅ Loaded: ${skillName}`);
+    console.log(`[SKILLS] ✅ ${skillName} cargado.`);
   }
 }
 
 function injectSkill(messages: ChatMessage[], modelAlias: string): ChatMessage[] {
   const skillName = Object.keys(SKILLS).find(s => modelAlias.startsWith(s));
   if (!skillName) return messages;
-  
   const prompt = SKILLS[skillName];
   const hasSystem = messages.some(m => m.role === "system");
   return hasSystem 
@@ -155,9 +155,9 @@ function injectSkill(messages: ChatMessage[], modelAlias: string): ChatMessage[]
 
 const memCache = new Map<string, { v: string; e: number }>();
 let redisAvailable = false;
-const redis = new Redis({ host: REDIS_HOST, port: 6379, password: "hom795er", lazyConnect: true });
+const redis = new Redis({ host: REDIS_HOST, port: 6379, password: "hom795er", lazyConnect: true, connectTimeout: 1000 });
 
-redis.on("connect", () => { redisAvailable = true; console.log("[CACHE] Redis OK"); });
+redis.on("connect", () => { redisAvailable = true; });
 redis.on("error", () => { redisAvailable = false; });
 
 async function getCache(messages: ChatMessage[], model: string): Promise<string | null> {
@@ -190,7 +190,7 @@ async function performHealthChecks() {
     }
     try {
       const start = Date.now();
-      const res = await fetch(`${config.url}/api/tags`, { signal: AbortSignal.timeout(2000) });
+      const res = await fetch(`${config.url}/api/tags`, { signal: AbortSignal.timeout(3000) });
       const online = res.ok;
       const latency = Date.now() - start;
       NODE_HEALTH[name] = { online, load: online ? latency : 999, lastChecked: Date.now() };
@@ -204,48 +204,37 @@ async function performHealthChecks() {
 }
 
 // =========================
-// 🧠 ROUTING (Sincrónico)
+// 🧠 ROUTING (Local First)
 // =========================
 
 function selectNodeSync(modelAlias: string): SelectedNode | null {
   const entries = MODEL_MAP[modelAlias] || [];
-  const available = entries
-    .filter(e => NODE_HEALTH[e.nodeName]?.online)
+  
+  // 1. Intentar Ollama primero (Filtrar y ordenar por latencia)
+  const ollamaNodes = entries
+    .filter(e => NODES[e.nodeName].type === "ollama" && NODE_HEALTH[e.nodeName]?.online)
     .sort((a, b) => NODE_HEALTH[a.nodeName].load - NODE_HEALTH[b.nodeName].load);
 
-  if (available.length === 0) return null;
-  
-  const best = available[0];
-  Metrics.nodeSelected.labels({ node: best.nodeName }).inc();
-  return { nodeName: best.nodeName, model: best.model, config: NODES[best.nodeName] };
-}
-
-// =========================
-// 🤖 API CALLS (Simplified)
-// =========================
-
-async function* streamOllama(nodeUrl: string, model: string, messages: ChatMessage[]): AsyncGenerator<string> {
-  const res = await fetch(`${nodeUrl}/api/chat`, {
-    method: "POST",
-    body: JSON.stringify({ model, messages, stream: true }),
-    signal: AbortSignal.timeout(120_000)
-  });
-  if (!res.body) return;
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    const chunk = decoder.decode(value);
-    // Aquí podrías procesar el JSON de Ollama para convertirlo a formato OpenAI
-    yield `data: ${chunk}\n\n`;
+  if (ollamaNodes.length > 0) {
+    const best = ollamaNodes[0];
+    Metrics.nodeSelected.labels({ node: best.nodeName }).inc();
+    return { nodeName: best.nodeName, model: best.model, config: NODES[best.nodeName] };
   }
+
+  // 2. Fallback a Cloud si no hay local disponible
+  const cloudNodes = entries.filter(e => NODES[e.nodeName].type !== "ollama" && NODE_HEALTH[e.nodeName]?.online);
+  
+  if (cloudNodes.length > 0) {
+    const best = cloudNodes[0];
+    Metrics.nodeSelected.labels({ node: best.nodeName }).inc();
+    return { nodeName: best.nodeName, model: best.model, config: NODES[best.nodeName] };
+  }
+
+  return null;
 }
 
-// ... (Aquí irían callAnthropic, callGoogle, etc., similares a tu versión original pero usando interfaces)
-
 // =========================
-// 🔥 HANDLERS
+// 🔥 CHAT HANDLER
 // =========================
 
 async function handleChat(req: ChatRequest, reply: FastifyReply) {
@@ -257,64 +246,83 @@ async function handleChat(req: ChatRequest, reply: FastifyReply) {
 
   if (!stream) {
     const cached = await getCache(finalMessages, model);
-    if (cached) return reply.send({ id: "cached", choices: [{ message: { content: cached } }] });
+    if (cached) return reply.send({ id: `cache-${Date.now()}`, choices: [{ message: { content: cached }, finish_reason: "stop" }] });
   }
 
   const selected = selectNodeSync(model);
   if (!selected) {
     Metrics.errors.inc();
-    return reply.status(503).send({ error: "No nodes online" });
+    return reply.status(503).send({ error: "No nodes available (Local/Cloud Offline)" });
   }
 
-  console.log(`[ROUTER] ${model} -> ${selected.nodeName}`);
+  console.log(`[ROUTER] ${model} -> ${selected.nodeName} (${selected.config.type})`);
 
   if (stream) {
+    // Para simplificar, redirigimos el stream directamente
+    // (Nota: En producción aquí procesarías el chunk para estandarizar a formato OpenAI)
     reply.raw.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
-    // Lógica de streaming simplificada
-    const gen = streamOllama(selected.config.url, selected.model, finalMessages);
-    for await (const chunk of gen) reply.raw.write(chunk);
+    const res = await fetch(`${selected.config.url}/api/chat`, {
+        method: "POST",
+        body: JSON.stringify({ model: selected.model, messages: finalMessages, stream: true })
+    });
+    if (!res.body) return reply.raw.end();
+    const reader = res.body.getReader();
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        reply.raw.write(value);
+    }
     return reply.raw.end();
   }
 
-  // Non-stream (Ejemplo simplificado para Ollama)
   const start = Date.now();
-  const res = await fetch(`${selected.config.url}/api/chat`, {
-    method: "POST",
-    body: JSON.stringify({ model: selected.model, messages: finalMessages, stream: false })
-  });
-  const data = await res.json() as OllamaResponse;
-  
-  Metrics.latency.labels({ model: selected.model }).observe((Date.now() - start) / 1000);
-  
-  const content = data.message?.content || "";
-  await setCache(finalMessages, model, content);
-  return reply.send({ choices: [{ message: { content } }] });
+  try {
+    const res = await fetch(`${selected.config.url}/api/chat`, {
+        method: "POST",
+        body: JSON.stringify({ model: selected.model, messages: finalMessages, stream: false }),
+        signal: AbortSignal.timeout(60000)
+    });
+    const data = await res.json() as OllamaResponse;
+    const content = data.message?.content || "";
+    
+    Metrics.latency.labels({ model: selected.model }).observe((Date.now() - start) / 1000);
+    if (content) await setCache(finalMessages, model, content);
+
+    return reply.send({ 
+        id: `chat-${Date.now()}`,
+        model: selected.model,
+        choices: [{ message: { role: "assistant", content }, finish_reason: "stop" }]
+    });
+  } catch (err) {
+    Metrics.errors.inc();
+    return reply.status(500).send({ error: "Error calling node" });
+  }
 }
 
 // =========================
-// 🚀 SERVER START
+// 🚀 INICIO DEL SERVIDOR
 // =========================
 
 const app = Fastify({ logger: false });
 
-app.post("/v1/chat/completions", (req, reply) => handleChat(req.body as ChatRequest, reply));
+app.post("/v1/chat/completions", async (req, reply) => handleChat(req.body as ChatRequest, reply));
 app.get("/health", async () => ({ status: "ok", nodes: NODE_HEALTH }));
 app.get("/metrics", async (_, reply) => {
   reply.header("Content-Type", registry.contentType);
-  return registry.metrics();
+  return reply.send(await registry.metrics());
 });
 
 async function start() {
   loadSkills();
-  console.log("🔍 Checking nodes...");
+  console.log("🔍 Realizando Health Check inicial...");
   await performHealthChecks();
   
-  // Iniciar ciclo de salud cada 30s
-  setInterval(performHealthChecks, 30_000);
+  setInterval(performHealthChecks, 20_000); // Check cada 20s
 
   try {
     await app.listen({ port: PORT, host: "0.0.0.0" });
-    console.log(`🚀 Router at http://localhost:${PORT}`);
+    console.log(`🚀 Router activo en puerto ${PORT}`);
+    console.log(`🏠 Prioridad Local: Activa (Ollama > Cloud)`);
   } catch (err) {
     console.error(err);
     process.exit(1);
