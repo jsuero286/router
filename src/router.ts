@@ -17,6 +17,9 @@ const REDIS_HOST         = process.env.REDIS_HOST ?? "127.0.0.1";
 const REDIS_PORT         = parseInt(process.env.REDIS_PORT ?? "6379", 10);
 const REDIS_PASSWORD     = process.env.REDIS_PASSWORD ?? undefined;
 const CACHE_TTL          = parseInt(process.env.CACHE_TTL ?? "300", 10);
+const OLLAMA_KEEP_ALIVE  = process.env.OLLAMA_KEEP_ALIVE ?? "1h";
+const OLLAMA_NUM_CTX     = parseInt(process.env.OLLAMA_NUM_CTX ?? "0", 10); // 0 = usar default del modelo
+const WARMUP_ON_START    = (process.env.WARMUP_ON_START ?? "true") === "true";
 
 // =========================
 // 🔧 TYPES
@@ -539,7 +542,11 @@ async function callOllama(nodeUrl: string, model: string, messages: ChatMessage[
   const res = await fetch(`${nodeUrl}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model, messages, stream: false }),
+    body: JSON.stringify({
+      model, messages, stream: false,
+      keep_alive: OLLAMA_KEEP_ALIVE,
+      ...(OLLAMA_NUM_CTX > 0 ? { options: { num_ctx: OLLAMA_NUM_CTX } } : {}),
+    }),
     signal: AbortSignal.timeout(120_000),
   });
   if (!res.ok) return { error: `HTTP ${res.status}: ${await res.text()}` };
@@ -612,7 +619,11 @@ async function* streamOllama(nodeUrl: string, model: string, messages: ChatMessa
   const res = await fetch(`${nodeUrl}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model, messages, stream: true }),
+    body: JSON.stringify({
+      model, messages, stream: true,
+      keep_alive: OLLAMA_KEEP_ALIVE,
+      ...(OLLAMA_NUM_CTX > 0 ? { options: { num_ctx: OLLAMA_NUM_CTX } } : {}),
+    }),
     signal: AbortSignal.timeout(300_000),
   });
   if (!res.body) { yield `data: ${JSON.stringify({ error: "No response body" })}\n\n`; return; }
@@ -1038,6 +1049,54 @@ if (fs.existsSync(SKILLS_DIR)) {
   console.log(`[SKILLS] 👀 Watching ${SKILLS_DIR}`);
 }
 
+// =========================
+// 🔥 WARMUP
+// =========================
+
+async function warmupNode(nodeName: string, nodeUrl: string, model: string): Promise<void> {
+  try {
+    const res = await fetch(`${nodeUrl}/api/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model, prompt: "", keep_alive: OLLAMA_KEEP_ALIVE }),
+      signal: AbortSignal.timeout(60_000),
+    });
+    if (res.ok) {
+      console.log(`[WARMUP] ✅ ${nodeName} → ${model} cargado en VRAM`);
+    } else {
+      console.warn(`[WARMUP] ⚠️  ${nodeName} → ${model} HTTP ${res.status}`);
+    }
+  } catch (err) {
+    console.warn(`[WARMUP] ❌ ${nodeName} → ${model} no disponible: ${err}`);
+  }
+}
+
+async function warmupAll(): Promise<void> {
+  // Recoge el modelo principal de cada nodo Ollama mirando el alias "auto"
+  // y los alias de nodo explícitos del MODEL_MAP
+  const toWarm = new Map<string, { url: string; model: string }>();
+
+  for (const [alias, entries] of Object.entries(MODEL_MAP)) {
+    for (const entry of entries) {
+      const config = NODES[entry.nodeName];
+      if (!config || config.type !== "ollama") continue;
+      const key = `${entry.nodeName}:${entry.model}`;
+      if (!toWarm.has(key)) {
+        toWarm.set(key, { url: config.url, model: entry.model });
+      }
+    }
+  }
+
+  console.log(`[WARMUP] Precalentando ${toWarm.size} modelo/s en nodos Ollama...`);
+  await Promise.allSettled(
+      [...toWarm.entries()].map(([key, { url, model }]) => {
+        const nodeName = key.split(":")[0];
+        return warmupNode(nodeName, url, model);
+      })
+  );
+  console.log("[WARMUP] Completado");
+}
+
 app.listen({ port: PORT, host: "0.0.0.0" }, (err) => {
   if (err) { app.log.error(err); process.exit(1); }
   console.log(`🚀 Router running on http://0.0.0.0:${PORT}`);
@@ -1047,4 +1106,8 @@ app.listen({ port: PORT, host: "0.0.0.0" }, (err) => {
   console.log(`   Cache TTL: ${CACHE_TTL}s (global)`);
   console.log(`   Métricas:  ${METRICS_ENABLED   ? "✅ activas"     : "❌ desactivadas"}`);
   console.log(`   Skills:    ${Object.keys(SKILLS).length > 0 ? Object.keys(SKILLS).join(", ") : "ninguno"}`);
+  console.log(`   Keep-alive: ${OLLAMA_KEEP_ALIVE}${OLLAMA_NUM_CTX > 0 ? ` | ctx: ${OLLAMA_NUM_CTX}` : ""}`);
+  if (WARMUP_ON_START) {
+    warmupAll().catch((e) => console.error("[WARMUP] Error inesperado:", e));
+  }
 });
