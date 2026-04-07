@@ -20,7 +20,10 @@ const CACHE_TTL          = parseInt(process.env.CACHE_TTL ?? "300", 10);
 const OLLAMA_KEEP_ALIVE  = process.env.OLLAMA_KEEP_ALIVE ?? "1h";
 const OLLAMA_NUM_CTX     = parseInt(process.env.OLLAMA_NUM_CTX ?? "0", 10); // 0 = usar default del modelo
 const WARMUP_ON_START    = (process.env.WARMUP_ON_START ?? "true") === "true";
-const ROUTER_API_KEY     = process.env.ROUTER_API_KEY ?? "";
+const ROUTER_API_KEY         = process.env.ROUTER_API_KEY ?? "";
+const CLASSIFIER_ENABLED     = (process.env.CLASSIFIER_ENABLED ?? "true") === "true";
+const CLASSIFIER_NODE_URL    = process.env.CLASSIFIER_NODE_URL ?? "http://ai-mac.casa.lan";
+const CLASSIFIER_MODEL       = process.env.CLASSIFIER_MODEL ?? "qwen2.5:0.5b";
 if (!ROUTER_API_KEY) {
   console.error("❌ ROUTER_API_KEY no definida — el router no arrancará sin autenticación configurada");
   process.exit(1);
@@ -855,6 +858,102 @@ async function* streamGoogle(model: string, messages: ChatMessage[]): AsyncGener
 }
 
 // =========================
+// 🧠 CLASIFICADOR DE COMPLEJIDAD
+// =========================
+
+type Complexity = "simple" | "medium" | "complex";
+
+// Palabras que indican razonamiento profundo → complex
+const COMPLEX_KEYWORDS = [
+  "arquitectura", "architecture", "diseña", "design", "refactor", "optimiza", "optimize",
+  "explica en detalle", "explain in detail", "por qué", "why does", "cómo funciona", "how does",
+  "implementa", "implement", "sistema", "system", "algoritmo", "algorithm",
+  "debug", "error", "excepción", "exception", "problema", "issue", "falla", "fails",
+  "prueba", "test", "rendimiento", "performance", "seguridad", "security",
+  "paso a paso", "step by step", "compara", "compare", "diferencia", "difference",
+];
+
+// Palabras que indican tarea simple → simple
+const SIMPLE_KEYWORDS = [
+  "hola", "hello", "hi", "gracias", "thanks", "qué es", "what is", "define",
+  "lista", "list", "enumera", "enum", "cuántos", "how many", "cuándo", "when",
+  "traduce", "translate", "resume", "summarize", "acorta", "shorten",
+];
+
+function classifyByRules(messages: ChatMessage[]): Complexity | null {
+  const lastUser = [...messages].reverse().find((m) => m.role === "user");
+  if (!lastUser) return null;
+
+  const text = lastUser.content.toLowerCase();
+  const words = text.split(/\s+/).length;
+
+  // Muy corta y sin keywords técnicos → simple
+  if (words <= 8 && !COMPLEX_KEYWORDS.some((k) => text.includes(k))) return "simple";
+
+  // Keywords de complejidad explícita
+  if (COMPLEX_KEYWORDS.some((k) => text.includes(k))) return "complex";
+  if (SIMPLE_KEYWORDS.some((k) => text.includes(k)) && words <= 20) return "simple";
+
+  // Mensajes muy largos (probablemente código o contexto extenso) → complex
+  if (lastUser.content.length > 1500) return "complex";
+
+  return null; // dudoso → delegar al modelo
+}
+
+async function classifyByModel(messages: ChatMessage[]): Promise<Complexity> {
+  const lastUser = [...messages].reverse().find((m) => m.role === "user");
+  if (!lastUser) return "medium";
+
+  const prompt = `Classify the complexity of this request with a single word: "simple", "medium", or "complex".
+- simple: greetings, definitions, short translations, yes/no questions
+- medium: code snippets, explanations, short implementations
+- complex: architecture, debugging, deep analysis, long implementations, system design
+
+Request: "${lastUser.content.slice(0, 300)}"
+
+Reply with only one word:`;
+
+  try {
+    const res = await fetch(`${CLASSIFIER_NODE_URL}/api/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model: CLASSIFIER_MODEL, prompt, stream: false }),
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!res.ok) return "medium";
+    const data = (await res.json()) as { response?: string };
+    const raw = (data.response ?? "").toLowerCase().trim();
+    if (raw.includes("simple")) return "simple";
+    if (raw.includes("complex")) return "complex";
+    return "medium";
+  } catch {
+    return "medium"; // si el clasificador falla, tiramos por la media
+  }
+}
+
+async function classifyComplexity(messages: ChatMessage[]): Promise<Complexity> {
+  // 1. Reglas rápidas — sin latencia
+  const byRules = classifyByRules(messages);
+  if (byRules) {
+    console.log(`[CLASSIFIER] Reglas → ${byRules}`);
+    return byRules;
+  }
+  // 2. Modelo local — solo si está habilitado
+  if (CLASSIFIER_ENABLED) {
+    const byModel = await classifyByModel(messages);
+    console.log(`[CLASSIFIER] Modelo (${CLASSIFIER_MODEL}) → ${byModel}`);
+    return byModel;
+  }
+  return "medium";
+}
+
+function complexityToAlias(complexity: Complexity): string {
+  if (complexity === "simple")  return "fast";
+  if (complexity === "complex") return "reasoning";
+  return "auto";
+}
+
+// =========================
 // 🧠 OPENAI RESPONSE FORMAT
 // =========================
 
@@ -889,19 +988,29 @@ async function handleChat(data: ChatRequest, reply: FastifyReply) {
 
   REQUEST_COUNT_inc({ model });
 
+  // Clasificar complejidad si el alias es "auto"
+  let resolvedModel = model;
+  if (model === "auto") {
+    const complexity = await classifyComplexity(messages);
+    resolvedModel = complexityToAlias(complexity);
+    if (resolvedModel !== "auto") {
+      console.log(`[CLASSIFIER] "${model}" → "${resolvedModel}" (${complexity})`);
+    }
+  }
+
   // Inyectar skill si el modelo lo requiere
-  const skillName = extractSkill(model);
+  const skillName = extractSkill(resolvedModel);
   if (skillName) {
     messages = injectSkill(messages, skillName);
-    console.log(`[SKILL] Inyectando "${skillName}" en "${model}"`);
+    console.log(`[SKILL] Inyectando "${skillName}" en "${resolvedModel}"`);
   }
 
   if (!stream) {
-    const cached = await getCache(messages, model);
-    if (cached) return reply.send(openaiResponse(model, cached));
+    const cached = await getCache(messages, resolvedModel);
+    if (cached) return reply.send(openaiResponse(resolvedModel, cached));
   }
 
-  const candidates = await selectCandidates(model);
+  const candidates = await selectCandidates(resolvedModel);
   if (candidates.length === 0) {
     ERROR_COUNT_inc();
     return reply.status(503).send({ error: "No nodes available" });
@@ -1128,6 +1237,7 @@ app.listen({ port: PORT, host: "0.0.0.0" }, (err) => {
   console.log(`   Skills:    ${Object.keys(SKILLS).length > 0 ? Object.keys(SKILLS).join(", ") : "ninguno"}`);
   console.log(`   Keep-alive: ${OLLAMA_KEEP_ALIVE}${OLLAMA_NUM_CTX > 0 ? ` | ctx: ${OLLAMA_NUM_CTX}` : ""}`);
   console.log(`   Auth:       ✅ API key activa`);
+  console.log(`   Classifier: ${CLASSIFIER_ENABLED ? `✅ ${CLASSIFIER_MODEL} @ ${CLASSIFIER_NODE_URL}` : "❌ desactivado (solo reglas)"}`);
   if (WARMUP_ON_START) {
     warmupAll().catch((e) => console.error("[WARMUP] Error inesperado:", e));
   }
