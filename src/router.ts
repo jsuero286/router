@@ -13,6 +13,9 @@ const ANTHROPIC_API_KEY  = process.env.ANTHROPIC_API_KEY ?? "";
 const GOOGLE_API_KEY     = process.env.GOOGLE_API_KEY ?? "";
 const SKILLS_DIR         = process.env.SKILLS_DIR ?? path.join(process.cwd(), "skills");
 const METRICS_ENABLED    = (process.env.METRICS_ENABLED ?? "true") === "true";
+const REDIS_HOST         = process.env.REDIS_HOST ?? "127.0.0.1";
+const REDIS_PORT         = parseInt(process.env.REDIS_PORT ?? "6379", 10);
+const REDIS_PASSWORD     = process.env.REDIS_PASSWORD ?? undefined;
 
 // =========================
 // 🔧 TYPES
@@ -262,9 +265,9 @@ function memCacheSet(key: string, value: string): void {
 let redisAvailable = false;
 
 const redis = new Redis({
-  host: "192.168.50.82",
-  port: 6379,
-  password: "hom795er",
+  host: REDIS_HOST,
+  port: REDIS_PORT,
+  password: REDIS_PASSWORD,
   connectTimeout: 2000,
   commandTimeout: 2000,
   lazyConnect: true,
@@ -873,6 +876,7 @@ app.listen({ port: PORT, host: "0.0.0.0" }, (err) => {
   console.log(`🚀 Router running on http://0.0.0.0:${PORT}`);
   console.log(`   Anthropic: ${ANTHROPIC_API_KEY ? "✅ configurado" : "❌ no definida"}`);
   console.log(`   Google:    ${GOOGLE_API_KEY    ? "✅ configurado" : "❌ no definida"}`);
+  console.log(`   Redis:     ${REDIS_HOST}:${REDIS_PORT}`);
   console.log(`   Métricas:  ${METRICS_ENABLED   ? "✅ activas"     : "❌ desactivadas"}`);
   console.log(`   Skills:    ${Object.keys(SKILLS).length > 0 ? Object.keys(SKILLS).join(", ") : "ninguno"}`);
 });
