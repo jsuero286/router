@@ -93,6 +93,10 @@ Crea un fichero `.env` en la raíz del proyecto:
 # Puerto del servidor
 PORT=8000
 
+# Autenticación — OBLIGATORIA, el router no arranca sin ella
+# Genera un token con: openssl rand -hex 32
+ROUTER_API_KEY=tu-token-aqui
+
 # API Keys de proveedores cloud
 ANTHROPIC_API_KEY=sk-ant-...
 GOOGLE_API_KEY=AIza...
@@ -119,6 +123,39 @@ const NODES: Record<string, NodeConfig> = {
   claude:  { url: "https://api.anthropic.com",                 type: "anthropic" },
   gemini:  { url: "https://generativelanguage.googleapis.com", type: "google" },
 };
+```
+
+## Autenticación
+
+El router requiere autenticación mediante `Authorization: Bearer <token>` en todas las peticiones excepto `/health`, `/metrics`, `/skills` y `/v1` (rutas públicas para Prometheus y healthchecks).
+
+Si `ROUTER_API_KEY` no está definida en el entorno, **el proceso no arranca**.
+
+Genera un token seguro:
+
+```bash
+openssl rand -hex 32
+```
+
+### Aider
+
+Añade `--openai-api-key` a tus aliases en `aliases/aliases.zsh`:
+
+```bash
+alias aider-auto="aider --openai-api-key tu-token --openai-api-base http://router.casa.lan/v1 --model openai/auto"
+```
+
+### Open WebUI
+
+En **Settings → Admin → Connections → OpenAI API**, sustituye `none` por tu token en el campo API Key.
+
+### curl
+
+```bash
+curl http://router.casa.lan/v1/chat/completions \
+  -H "Authorization: Bearer tu-token" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "auto", "messages": [{"role": "user", "content": "Hola"}]}'
 ```
 
 ## Optimización de velocidad (Ollama)
@@ -217,6 +254,32 @@ El endpoint `/health` muestra qué caché está activa:
 | `llm_node_load` | Carga actual de cada nodo |
 | `llm_errors_total` | Errores totales |
 | `llm_redis_errors_total` | Errores de Redis |
+
+---
+
+## Dashboard Grafana
+
+El fichero `grafana.json` en la raíz del proyecto contiene un dashboard preconfigurado con las siguientes secciones:
+
+- **Resumen** — total peticiones, latencia media, cache hit rate, coste estimado, errores y errores Redis
+- **Tráfico y latencia** — req/s por modelo + latencia p50/p95/p99
+- **Nodos** — peticiones por nodo en el tiempo + gauge de carga en VRAM (verde=libre, rojo=OFFLINE)
+- **Rendimiento de modelos** — tokens/segundo por modelo + distribución de peticiones
+- **Coste y caché** — coste acumulado por modelo (USD) + hits vs misses
+- **Detalle por modelo** — tabla resumen con peticiones, latencia, tok/s y coste
+
+### Importar
+
+1. En Grafana: **Dashboards → Import → Upload JSON file** → selecciona `grafana.json`
+2. En el selector de datasource elige tu instancia de Prometheus
+3. Importar
+
+El dashboard se refresca cada 30 segundos y muestra por defecto las últimas 6 horas.
+
+### Requisitos
+
+- Prometheus raspando `/metrics` del router (`METRICS_ENABLED=true`)
+- Datasource Prometheus configurado en Grafana apuntando a tu instancia
 
 ---
 
@@ -341,18 +404,20 @@ En **Settings → Admin → Connections → OpenAI API**:
 ```bash
 # Chat básico
 curl http://router.casa.lan/v1/chat/completions \
+  -H "Authorization: Bearer tu-token" \
   -H "Content-Type: application/json" \
   -d '{"model": "auto", "messages": [{"role": "user", "content": "Hola"}]}'
 
 # Con skill
 curl http://router.casa.lan/v1/chat/completions \
+  -H "Authorization: Bearer tu-token" \
   -H "Content-Type: application/json" \
   -d '{"model": "angular-expert-gemini", "messages": [{"role": "user", "content": "Explícame los signals de Angular 18"}]}'
 
-# Ver skills disponibles
+# Ver skills disponibles (ruta pública, sin auth)
 curl http://router.casa.lan/skills
 
-# Estado del sistema
+# Estado del sistema (ruta pública, sin auth)
 curl http://router.casa.lan/health
 ```
 

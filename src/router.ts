@@ -20,6 +20,11 @@ const CACHE_TTL          = parseInt(process.env.CACHE_TTL ?? "300", 10);
 const OLLAMA_KEEP_ALIVE  = process.env.OLLAMA_KEEP_ALIVE ?? "1h";
 const OLLAMA_NUM_CTX     = parseInt(process.env.OLLAMA_NUM_CTX ?? "0", 10); // 0 = usar default del modelo
 const WARMUP_ON_START    = (process.env.WARMUP_ON_START ?? "true") === "true";
+const ROUTER_API_KEY     = process.env.ROUTER_API_KEY ?? "";
+if (!ROUTER_API_KEY) {
+  console.error("❌ ROUTER_API_KEY no definida — el router no arrancará sin autenticación configurada");
+  process.exit(1);
+}
 
 // =========================
 // 🔧 TYPES
@@ -979,6 +984,21 @@ async function handleChat(data: ChatRequest, reply: FastifyReply) {
 
 const app = Fastify({ logger: true });
 
+// Middleware de autenticación — siempre activo
+app.addHook("onRequest", async (req, reply) => {
+  // Rutas públicas que no requieren auth (Prometheus, healthcheck)
+  const publicRoutes = ["/health", "/metrics", "/v1", "/skills"];
+  if (publicRoutes.includes(req.url)) return;
+
+  const auth = req.headers["authorization"] ?? "";
+  const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
+  if (token !== ROUTER_API_KEY) {
+    return reply.status(401).send({
+      error: { message: "Invalid API key", type: "invalid_request_error", code: "invalid_api_key" }
+    });
+  }
+});
+
 app.post("/v1/chat/completions", async (req: FastifyRequest, reply: FastifyReply) => {
   return handleChat(req.body as ChatRequest, reply);
 });
@@ -1107,6 +1127,7 @@ app.listen({ port: PORT, host: "0.0.0.0" }, (err) => {
   console.log(`   Métricas:  ${METRICS_ENABLED   ? "✅ activas"     : "❌ desactivadas"}`);
   console.log(`   Skills:    ${Object.keys(SKILLS).length > 0 ? Object.keys(SKILLS).join(", ") : "ninguno"}`);
   console.log(`   Keep-alive: ${OLLAMA_KEEP_ALIVE}${OLLAMA_NUM_CTX > 0 ? ` | ctx: ${OLLAMA_NUM_CTX}` : ""}`);
+  console.log(`   Auth:       ✅ API key activa`);
   if (WARMUP_ON_START) {
     warmupAll().catch((e) => console.error("[WARMUP] Error inesperado:", e));
   }
