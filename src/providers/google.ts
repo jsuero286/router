@@ -1,12 +1,12 @@
 import { GOOGLE_API_KEY } from "../config";
 import { TOKENS_PER_SEC_observe } from "../metrics";
-import type { ChatMessage, OllamaResponse } from "../types";
+import type { ChatMessage, OllamaResponse, GenerationOptions } from "../types";
 
 // =========================
 // 🔵 GOOGLE GEMINI — non-stream & stream
 // =========================
 
-export async function callGoogle(model: string, messages: ChatMessage[]): Promise<OllamaResponse> {
+export async function callGoogle(model: string, messages: ChatMessage[], opts: GenerationOptions = {}): Promise<OllamaResponse> {
   if (!GOOGLE_API_KEY) return { error: "GOOGLE_API_KEY not set" };
   const systemMsg    = messages.find((m) => m.role === "system")?.content;
   const userMessages = messages.filter((m) => m.role !== "system");
@@ -16,6 +16,12 @@ export async function callGoogle(model: string, messages: ChatMessage[]): Promis
   }));
   const body: Record<string, unknown> = { contents };
   if (systemMsg) body.systemInstruction = { parts: [{ text: systemMsg }] };
+  if (opts.temperature != null || opts.top_p != null) {
+    const gc: Record<string, unknown> = {};
+    if (opts.temperature != null) gc.temperature = opts.temperature;
+    if (opts.top_p != null)        gc.topP        = opts.top_p;
+    body.generationConfig = gc;
+  }
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GOOGLE_API_KEY}`;
   const res = await fetch(url, {
     method: "POST",
@@ -33,7 +39,7 @@ export async function callGoogle(model: string, messages: ChatMessage[]): Promis
   };
 }
 
-export async function* streamGoogle(model: string, messages: ChatMessage[]): AsyncGenerator<string> {
+export async function* streamGoogle(model: string, messages: ChatMessage[], opts: GenerationOptions = {}): AsyncGenerator<string> {
   if (!GOOGLE_API_KEY) { yield `data: ${JSON.stringify({ error: "GOOGLE_API_KEY not set" })}\n\n`; return; }
   const systemMsg    = messages.find((m) => m.role === "system")?.content;
   const userMessages = messages.filter((m) => m.role !== "system");
@@ -43,6 +49,12 @@ export async function* streamGoogle(model: string, messages: ChatMessage[]): Asy
   }));
   const body: Record<string, unknown> = { contents };
   if (systemMsg) body.systemInstruction = { parts: [{ text: systemMsg }] };
+  if (opts.temperature != null || opts.top_p != null) {
+    const gc: Record<string, unknown> = {};
+    if (opts.temperature != null) gc.temperature = opts.temperature;
+    if (opts.top_p != null)        gc.topP        = opts.top_p;
+    body.generationConfig = gc;
+  }
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${GOOGLE_API_KEY}`;
   const res = await fetch(url, {
     method: "POST",

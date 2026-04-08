@@ -18,7 +18,7 @@ import { classifyComplexity, complexityToAlias } from "../classifier";
 import { sessionId, getConversation, saveConversation, deleteConversation } from "../history";
 import { selectCandidates, getNodeLoad } from "../nodes";
 import { callOllama, streamOllama, callAnthropic, streamAnthropic, callGoogle, streamGoogle } from "../providers";
-import type { ChatRequest, ChatMessage, ConversationContext } from "../types";
+import type { ChatRequest, ChatMessage, ConversationContext, GenerationOptions } from "../types";
 
 // =========================
 // 🧠 OPENAI RESPONSE FORMAT
@@ -48,6 +48,11 @@ async function handleChat(data: ChatRequest, reply: FastifyReply, req: FastifyRe
   const model    = data.model ?? "auto";
   let messages   = data.messages ?? [];
   const stream   = data.stream ?? false;
+  const opts: GenerationOptions = {
+    ...(data.temperature != null ? { temperature: data.temperature } : {}),
+    ...(data.top_p       != null ? { top_p:       data.top_p       } : {}),
+    ...(data.max_tokens  != null ? { max_tokens:  data.max_tokens  } : {}),
+  };
 
   if (messages.length === 0) {
     return reply.status(400).send({ error: { message: "messages required", type: "invalid_request_error" } });
@@ -145,9 +150,9 @@ async function handleChat(data: ChatRequest, reply: FastifyReply, req: FastifyRe
       "X-Accel-Buffering": "no",
     });
     const generator =
-      streamSelected.config.type === "anthropic" ? streamAnthropic(streamSelected.model, messages) :
-      streamSelected.config.type === "google"    ? streamGoogle(streamSelected.model, messages) :
-                                                   streamOllama(streamSelected.config.url, streamSelected.model, messages);
+      streamSelected.config.type === "anthropic" ? streamAnthropic(streamSelected.model, messages, opts) :
+      streamSelected.config.type === "google"    ? streamGoogle(streamSelected.model, messages, opts) :
+                                                   streamOllama(streamSelected.config.url, streamSelected.model, messages, opts);
     for await (const chunk of generator) reply.raw.write(chunk);
     reply.raw.end();
     return;
@@ -160,9 +165,9 @@ async function handleChat(data: ChatRequest, reply: FastifyReply, req: FastifyRe
     let result: import("../types").OllamaResponse;
     try {
       result =
-        selected.config.type === "anthropic" ? await callAnthropic(selected.model, messages) :
-        selected.config.type === "google"    ? await callGoogle(selected.model, messages) :
-                                               await callOllama(selected.config.url, selected.model, messages);
+        selected.config.type === "anthropic" ? await callAnthropic(selected.model, messages, opts) :
+        selected.config.type === "google"    ? await callGoogle(selected.model, messages, opts) :
+                                               await callOllama(selected.config.url, selected.model, messages, opts);
     } catch (err) {
       console.warn(`[RETRY] ${selected.nodeName} lanzó excepción: ${err} — probando siguiente`);
       continue;

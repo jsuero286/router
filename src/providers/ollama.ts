@@ -1,6 +1,6 @@
 import { OLLAMA_KEEP_ALIVE, OLLAMA_NUM_CTX } from "../config";
 import { TOKENS_PER_SEC_observe } from "../metrics";
-import type { ChatMessage, OllamaResponse } from "../types";
+import type { ChatMessage, OllamaResponse, GenerationOptions } from "../types";
 
 // =========================
 // 🔁 OLLAMA — non-stream & stream
@@ -10,14 +10,19 @@ export async function callOllama(
   nodeUrl: string,
   model: string,
   messages: ChatMessage[],
+  opts: GenerationOptions = {},
 ): Promise<OllamaResponse> {
+  const ollamaOpts: Record<string, unknown> = {};
+  if (OLLAMA_NUM_CTX > 0)       ollamaOpts.num_ctx     = OLLAMA_NUM_CTX;
+  if (opts.temperature != null)  ollamaOpts.temperature = opts.temperature;
+  if (opts.top_p != null)        ollamaOpts.top_p       = opts.top_p;
   const res = await fetch(`${nodeUrl}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model, messages, stream: false,
       keep_alive: OLLAMA_KEEP_ALIVE,
-      ...(OLLAMA_NUM_CTX > 0 ? { options: { num_ctx: OLLAMA_NUM_CTX } } : {}),
+      ...(Object.keys(ollamaOpts).length > 0 ? { options: ollamaOpts } : {}),
     }),
     signal: AbortSignal.timeout(120_000),
   });
@@ -30,14 +35,19 @@ export async function* streamOllama(
   nodeUrl: string,
   model: string,
   messages: ChatMessage[],
+  opts: GenerationOptions = {},
 ): AsyncGenerator<string> {
+  const ollamaOpts: Record<string, unknown> = {};
+  if (OLLAMA_NUM_CTX > 0)       ollamaOpts.num_ctx     = OLLAMA_NUM_CTX;
+  if (opts.temperature != null)  ollamaOpts.temperature = opts.temperature;
+  if (opts.top_p != null)        ollamaOpts.top_p       = opts.top_p;
   const res = await fetch(`${nodeUrl}/api/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model, messages, stream: true,
       keep_alive: OLLAMA_KEEP_ALIVE,
-      ...(OLLAMA_NUM_CTX > 0 ? { options: { num_ctx: OLLAMA_NUM_CTX } } : {}),
+      ...(Object.keys(ollamaOpts).length > 0 ? { options: ollamaOpts } : {}),
     }),
     signal: AbortSignal.timeout(300_000),
   });
