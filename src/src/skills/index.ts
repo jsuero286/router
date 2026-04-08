@@ -124,15 +124,43 @@ export function getSkillCacheTtl(skillName: string | null): number {
 
 export function watchSkills(): void {
   if (!fs.existsSync(SKILLS_DIR)) return;
+
   let reloadDebounce: ReturnType<typeof setTimeout> | null = null;
-  fs.watch(SKILLS_DIR, (_event, filename) => {
-    if (!filename?.endsWith(".md")) return;
+  let knownFiles = new Set(
+    fs.readdirSync(SKILLS_DIR).filter((f) => f.endsWith(".md"))
+  );
+
+  function scheduleReload(reason: string): void {
     if (reloadDebounce) clearTimeout(reloadDebounce);
     reloadDebounce = setTimeout(() => {
-      console.log(`[SKILLS] Cambio detectado en "${filename}" — recargando skills...`);
+      console.log(`[SKILLS] ${reason} — recargando skills...`);
       loadSkills();
       console.log(`[SKILLS] Skills recargadas: ${Object.keys(SKILLS).join(", ") || "ninguna"}`);
     }, 300);
+  }
+
+  // fs.watch detecta cambios en ficheros existentes (rápido)
+  fs.watch(SKILLS_DIR, (_event, filename) => {
+    if (filename?.endsWith(".md")) scheduleReload(`Cambio en "${filename}"`);
   });
-  console.log(`[SKILLS] 👀 Watching ${SKILLS_DIR}`);
+
+  // Polling ligero para detectar ficheros nuevos o eliminados (cada 5s)
+  setInterval(() => {
+    if (!fs.existsSync(SKILLS_DIR)) return;
+    const current = new Set(
+      fs.readdirSync(SKILLS_DIR).filter((f) => f.endsWith(".md"))
+    );
+    const added   = [...current].filter((f) => !knownFiles.has(f));
+    const removed = [...knownFiles].filter((f) => !current.has(f));
+    if (added.length > 0 || removed.length > 0) {
+      knownFiles = current;
+      const msg = [
+        ...added.map((f) => `+${f}`),
+        ...removed.map((f) => `-${f}`),
+      ].join(", ");
+      scheduleReload(`Ficheros modificados: ${msg}`);
+    }
+  }, 5000);
+
+  console.log(`[SKILLS] 👀 Watching ${SKILLS_DIR} (fs.watch + polling 5s)`);
 }
