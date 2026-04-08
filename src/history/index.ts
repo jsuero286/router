@@ -36,11 +36,15 @@ function memHistoryDel(sid: string): void {
 }
 
 export function sessionId(apiKey: string, req: FastifyRequest): string {
-  const ip = (req.headers["x-forwarded-for"] as string ?? req.socket.remoteAddress ?? "unknown").split(",")[0].trim();
-  const ua = (req.headers["user-agent"] ?? "unknown").slice(0, 50);
+  // Solo apiKey + hint para que cambios de IP o User-Agent (VPN, mobile, actualizaciones)
+  // no rompan la sesión. IP y UA solo se usan para logging.
   const hint = (req.body as ChatRequest)?.user ?? "";
-  const raw = `${apiKey}:${ip}:${ua}:${hint}`;
-  return "conv:" + crypto.createHash("sha256").update(raw).digest("hex").slice(0, 16);
+  const raw = `${apiKey}:${hint}`;
+  const sid = "conv:" + crypto.createHash("sha256").update(raw).digest("hex").slice(0, 16);
+  const ip = (req.headers["x-forwarded-for"] as string ?? req.socket.remoteAddress ?? "unknown").split(",")[0].trim();
+  const ua = (req.headers["user-agent"] ?? "unknown").slice(0, 30);
+  console.log(`[HISTORY] sid=${sid.slice(5, 13)}… ip=${ip} ua=${ua}`);
+  return sid;
 }
 
 export async function getConversation(sid: string): Promise<ConversationContext | null> {
