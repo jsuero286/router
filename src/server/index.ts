@@ -17,9 +17,7 @@ import { SKILLS, MODEL_MAP, SKILL_CACHE_TTL, loadSkills, watchSkills, extractSki
 import { classifyComplexity, complexityToAlias } from "../classifier";
 import { sessionId, getConversation, saveConversation, deleteConversation } from "../history";
 import { selectCandidates, getNodeLoad } from "../nodes";
-import { callOllama, streamOllama } from "../providers/ollama";
-import { callAnthropic, streamAnthropic } from "../providers/anthropic";
-import { callGoogle, streamGoogle } from "../providers/google";
+import { callOllama, streamOllama, callAnthropic, streamAnthropic, callGoogle, streamGoogle } from "../providers";
 import type { ChatRequest, ChatMessage, ConversationContext } from "../types";
 
 // =========================
