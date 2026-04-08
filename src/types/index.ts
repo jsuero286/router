@@ -12,6 +12,15 @@ export interface ChatRequest {
   messages?: ChatMessage[];
   stream?: boolean;
   user?: string;
+  temperature?: number;
+  top_p?: number;
+  max_tokens?: number;
+}
+
+export interface GenerationOptions {
+  temperature?: number;
+  top_p?: number;
+  max_tokens?: number;
 }
 
 export interface ConversationContext {

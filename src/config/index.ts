@@ -6,6 +6,7 @@ import type { NodeConfig, NodeEntry } from "../types";
 // =========================
 
 export const ANTHROPIC_API_KEY       = process.env.ANTHROPIC_API_KEY ?? "";
+export const ANTHROPIC_MAX_TOKENS    = parseInt(process.env.ANTHROPIC_MAX_TOKENS ?? "8096", 10);
 export const GOOGLE_API_KEY          = process.env.GOOGLE_API_KEY ?? "";
 export const SKILLS_DIR              = process.env.SKILLS_DIR ?? path.join(process.cwd(), "skills");
 export const METRICS_ENABLED         = (process.env.METRICS_ENABLED ?? "true") === "true";
@@ -34,9 +35,9 @@ if (!ROUTER_API_KEY) {
 // =========================
 
 export const TOKEN_COST_USD: Record<string, { input: number; output: number }> = {
-  // Anthropic
-  "claude-sonnet-4-5": { input: 3.00,  output: 15.00 },
-  "claude-opus-4-5":   { input: 15.00, output: 75.00 },
+  // Anthropic (precios por millón de tokens)
+  "claude-sonnet-4-6": { input: 3.00,  output: 15.00 },
+  "claude-opus-4-6":   { input: 15.00, output: 75.00 },
   // Google
   "gemini-2.5-flash":  { input: 0.075, output: 0.30  },
   "gemini-2.5-pro":    { input: 1.25,  output: 10.00 },
@@ -71,17 +72,18 @@ export const BASE_MODEL_MAP: Record<string, NodeEntry[]> = {
     { nodeName: "gpu4070", model: "deepseek-coder-v2:16b" },
     { nodeName: "mac",     model: "qwen2.5-coder:1.5b" },
     { nodeName: "gemini",  model: "gemini-2.5-flash" },
-    { nodeName: "claude",  model: "claude-sonnet-4-5" },
+    { nodeName: "claude",  model: "claude-sonnet-4-6" },
   ],
   fast: [
     { nodeName: "gpu5070", model: "qwen2.5-coder:7b" },
     { nodeName: "mac",     model: "qwen2.5-coder:1.5b" },
   ],
   reasoning: [
+    { nodeName: "gpu5070", model: "deepseek-r1:14b" },
     { nodeName: "gpu4070", model: "deepseek-r1:14b" },
     { nodeName: "mac",     model: "deepseek-r1:14b" },
     { nodeName: "gemini",  model: "gemini-2.5-pro" },
-    { nodeName: "claude",  model: "claude-opus-4-5" },
+    { nodeName: "claude",  model: "claude-opus-4-6" },
   ],
   "deepseek-coder": [
     { nodeName: "gpu4070", model: "deepseek-coder-v2:16b" },
@@ -91,11 +93,12 @@ export const BASE_MODEL_MAP: Record<string, NodeEntry[]> = {
   "mac-reason":      [{ nodeName: "mac",     model: "deepseek-r1:14b" }],
   "mac-coder":       [{ nodeName: "mac",     model: "deepseek-coder-v2:16b" }],
   "gpu5070-fast":    [{ nodeName: "gpu5070", model: "qwen2.5-coder:7b" }],
+  "gpu5070-reason":  [{ nodeName: "gpu5070", model: "deepseek-r1:14b" }],
   "gpu5070-coder":   [{ nodeName: "gpu5070", model: "deepseek-coder:6.7b-instruct-q4_K_M" }],
   "gpu4070-coder":   [{ nodeName: "gpu4070", model: "deepseek-coder-v2:16b" }],
   "gpu4070-reason":  [{ nodeName: "gpu4070", model: "deepseek-r1:14b" }],
-  "claude-sonnet":   [{ nodeName: "claude",  model: "claude-sonnet-4-5" }],
-  "claude-opus":     [{ nodeName: "claude",  model: "claude-opus-4-5" }],
+  "claude-sonnet":   [{ nodeName: "claude",  model: "claude-sonnet-4-6" }],
+  "claude-opus":     [{ nodeName: "claude",  model: "claude-opus-4-6" }],
   "gemini-flash":    [{ nodeName: "gemini",  model: "gemini-2.5-flash" }],
   "gemini-pro":      [{ nodeName: "gemini",  model: "gemini-2.5-pro" }],
 };

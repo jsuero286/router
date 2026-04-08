@@ -2,7 +2,7 @@ import Fastify, { FastifyRequest, FastifyReply } from "fastify";
 import * as crypto from "crypto";
 import {
   ROUTER_API_KEY, METRICS_ENABLED, CACHE_TTL, PORT,
-  ANTHROPIC_API_KEY, GOOGLE_API_KEY, REDIS_HOST, REDIS_PORT,
+  ANTHROPIC_API_KEY, ANTHROPIC_MAX_TOKENS, GOOGLE_API_KEY, REDIS_HOST, REDIS_PORT,
   OLLAMA_KEEP_ALIVE, OLLAMA_NUM_CTX, CLASSIFIER_ENABLED, CLASSIFIER_MODEL, CLASSIFIER_NODE_URL,
   WARMUP_ON_START, CONVERSATION_TTL, CONVERSATION_MAX_TURNS, NODES,
   estimateCostUsd,
@@ -18,7 +18,7 @@ import { classifyComplexity, complexityToAlias } from "../classifier";
 import { sessionId, getConversation, saveConversation, deleteConversation } from "../history";
 import { selectCandidates, getNodeLoad } from "../nodes";
 import { callOllama, streamOllama, callAnthropic, streamAnthropic, callGoogle, streamGoogle } from "../providers";
-import type { ChatRequest, ChatMessage, ConversationContext } from "../types";
+import type { ChatRequest, ChatMessage, ConversationContext, GenerationOptions } from "../types";
 
 // =========================
 // 🧠 OPENAI RESPONSE FORMAT
@@ -41,6 +41,27 @@ function openaiResponse(model: string, content: string, promptTokens = -1, compl
 }
 
 // =========================
+// 📊 ACUMULADOR DE USO GLOBAL
+// =========================
+
+const globalUsage = {
+  requests:        0,
+  totalCostUsd:    0,
+  tokensByModel:   {} as Record<string, { input: number; output: number }>,
+  startedAt:       Date.now(),
+};
+
+export function trackUsage(model: string, inputTokens: number, completionTokens: number, costUsd: number): void {
+  globalUsage.requests++;
+  globalUsage.totalCostUsd += costUsd;
+  if (!globalUsage.tokensByModel[model]) {
+    globalUsage.tokensByModel[model] = { input: 0, output: 0 };
+  }
+  if (inputTokens > 0)      globalUsage.tokensByModel[model].input  += inputTokens;
+  if (completionTokens > 0) globalUsage.tokensByModel[model].output += completionTokens;
+}
+
+// =========================
 // 🔥 CHAT HANDLER
 // =========================
 
@@ -48,6 +69,11 @@ async function handleChat(data: ChatRequest, reply: FastifyReply, req: FastifyRe
   const model    = data.model ?? "auto";
   let messages   = data.messages ?? [];
   const stream   = data.stream ?? false;
+  const opts: GenerationOptions = {
+    ...(data.temperature != null ? { temperature: data.temperature } : {}),
+    ...(data.top_p       != null ? { top_p:       data.top_p       } : {}),
+    ...(data.max_tokens  != null ? { max_tokens:  data.max_tokens  } : {}),
+  };
 
   if (messages.length === 0) {
     return reply.status(400).send({ error: { message: "messages required", type: "invalid_request_error" } });
@@ -105,11 +131,39 @@ async function handleChat(data: ChatRequest, reply: FastifyReply, req: FastifyRe
     return reply.status(503).send({ error: "No nodes available" });
   }
 
-  // ── STREAM (sin retry: los headers ya se enviaron) ───────────
+  // ── STREAM con retry pre-headers ────────────────────────────
   if (stream) {
-    const selected = candidates[0];
-    NODE_SELECTED_inc({ node: selected.nodeName });
-    console.log(`[ROUTER] ${model} → ${selected.model} @ ${selected.nodeName} (stream)`);
+    // Probe rápido antes de abrir el stream para poder hacer retry
+    async function probeNode(selected: (typeof candidates)[0]): Promise<boolean> {
+      if (selected.config.type === "anthropic") return !!ANTHROPIC_API_KEY;
+      if (selected.config.type === "google")    return !!GOOGLE_API_KEY;
+      try {
+        const res = await fetch(`${selected.config.url}/api/ps`, {
+          signal: AbortSignal.timeout(2000),
+        });
+        return res.ok;
+      } catch {
+        return false;
+      }
+    }
+
+    let streamSelected: (typeof candidates)[0] | null = null;
+    for (const candidate of candidates) {
+      const alive = await probeNode(candidate);
+      if (alive) {
+        streamSelected = candidate;
+        break;
+      }
+      console.warn(`[STREAM-RETRY] ${candidate.nodeName} no responde — probando siguiente`);
+    }
+
+    if (!streamSelected) {
+      ERROR_COUNT_inc();
+      return reply.status(503).send({ error: "No nodes available for streaming" });
+    }
+
+    NODE_SELECTED_inc({ node: streamSelected.nodeName });
+    console.log(`[ROUTER] ${model} → ${streamSelected.model} @ ${streamSelected.nodeName} (stream)`);
     reply.raw.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
@@ -117,9 +171,9 @@ async function handleChat(data: ChatRequest, reply: FastifyReply, req: FastifyRe
       "X-Accel-Buffering": "no",
     });
     const generator =
-      selected.config.type === "anthropic" ? streamAnthropic(selected.model, messages) :
-      selected.config.type === "google"    ? streamGoogle(selected.model, messages) :
-                                             streamOllama(selected.config.url, selected.model, messages);
+      streamSelected.config.type === "anthropic" ? streamAnthropic(streamSelected.model, messages, opts) :
+      streamSelected.config.type === "google"    ? streamGoogle(streamSelected.model, messages, opts) :
+                                                   streamOllama(streamSelected.config.url, streamSelected.model, messages, opts);
     for await (const chunk of generator) reply.raw.write(chunk);
     reply.raw.end();
     return;
@@ -132,9 +186,9 @@ async function handleChat(data: ChatRequest, reply: FastifyReply, req: FastifyRe
     let result: import("../types").OllamaResponse;
     try {
       result =
-        selected.config.type === "anthropic" ? await callAnthropic(selected.model, messages) :
-        selected.config.type === "google"    ? await callGoogle(selected.model, messages) :
-                                               await callOllama(selected.config.url, selected.model, messages);
+        selected.config.type === "anthropic" ? await callAnthropic(selected.model, messages, opts) :
+        selected.config.type === "google"    ? await callGoogle(selected.model, messages, opts) :
+                                               await callOllama(selected.config.url, selected.model, messages, opts);
     } catch (err) {
       console.warn(`[RETRY] ${selected.nodeName} lanzó excepción: ${err} — probando siguiente`);
       continue;
@@ -165,6 +219,7 @@ async function handleChat(data: ChatRequest, reply: FastifyReply, req: FastifyRe
       COST_USD_inc({ model: selected.model }, cost);
       console.log(`[COST]  ${selected.model} ~$${cost.toFixed(6)}`);
     }
+    trackUsage(selected.model, inputTokens, completionTokens, cost);
 
     await setCache(messages, resolvedModel, content, getSkillCacheTtl(skillName));
 
@@ -255,6 +310,17 @@ app.delete("/v1/conversation", async (req: FastifyRequest, reply: FastifyReply) 
   return reply.send({ deleted: true, session_id: sid });
 });
 
+app.get("/v1/usage", async (_req, reply) => {
+  const uptimeSec = Math.floor((Date.now() - globalUsage.startedAt) / 1000);
+  return reply.send({
+    uptime_seconds:   uptimeSec,
+    requests:         globalUsage.requests,
+    total_cost_usd:   parseFloat(globalUsage.totalCostUsd.toFixed(6)),
+    tokens_by_model:  globalUsage.tokensByModel,
+    started_at:       new Date(globalUsage.startedAt).toISOString(),
+  });
+});
+
 app.get("/health", async (_req, reply) => {
   const nodeChecks = await Promise.all(
     Object.entries(NODES).map(async ([name, config]) => ({
@@ -333,7 +399,7 @@ export async function startServer(): Promise<void> {
   app.listen({ port: PORT, host: "0.0.0.0" }, (err) => {
     if (err) { app.log.error(err); process.exit(1); }
     console.log(`🚀 Router running on http://0.0.0.0:${PORT}`);
-    console.log(`   Anthropic: ${ANTHROPIC_API_KEY ? "✅ configurado" : "❌ no definida"}`);
+    console.log(`   Anthropic: ${ANTHROPIC_API_KEY ? "✅ configurado" : "❌ no definida"} (max_tokens: ${ANTHROPIC_MAX_TOKENS})`);
     console.log(`   Google:    ${GOOGLE_API_KEY    ? "✅ configurado" : "❌ no definida"}`);
     console.log(`   Redis:     ${REDIS_HOST}:${REDIS_PORT}`);
     console.log(`   Cache TTL: ${CACHE_TTL}s (global)`);

@@ -1,16 +1,18 @@
-import { ANTHROPIC_API_KEY } from "../config";
+import { ANTHROPIC_API_KEY, ANTHROPIC_MAX_TOKENS } from "../config";
 import { TOKENS_PER_SEC_observe } from "../metrics";
-import type { ChatMessage, OllamaResponse } from "../types";
+import type { ChatMessage, OllamaResponse, GenerationOptions } from "../types";
 
 // =========================
 // 🤖 ANTHROPIC — non-stream & stream
 // =========================
 
-export async function callAnthropic(model: string, messages: ChatMessage[]): Promise<OllamaResponse> {
+export async function callAnthropic(model: string, messages: ChatMessage[], opts: GenerationOptions = {}): Promise<OllamaResponse> {
   if (!ANTHROPIC_API_KEY) return { error: "ANTHROPIC_API_KEY not set" };
   const systemMsg    = messages.find((m) => m.role === "system")?.content;
   const userMessages = messages.filter((m) => m.role !== "system");
-  const body: Record<string, unknown> = { model, max_tokens: 8096, messages: userMessages };
+  const body: Record<string, unknown> = { model, max_tokens: opts.max_tokens ?? ANTHROPIC_MAX_TOKENS, messages: userMessages };
+  if (opts.temperature != null) body.temperature = opts.temperature;
+  if (opts.top_p != null)        body.top_p       = opts.top_p;
   if (systemMsg) body.system = systemMsg;
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -32,14 +34,16 @@ export async function callAnthropic(model: string, messages: ChatMessage[]): Pro
   };
 }
 
-export async function* streamAnthropic(model: string, messages: ChatMessage[]): AsyncGenerator<string> {
+export async function* streamAnthropic(model: string, messages: ChatMessage[], opts: GenerationOptions = {}): AsyncGenerator<string> {
   if (!ANTHROPIC_API_KEY) {
     yield `data: ${JSON.stringify({ error: "ANTHROPIC_API_KEY not set" })}\n\n`;
     return;
   }
   const systemMsg    = messages.find((m) => m.role === "system")?.content;
   const userMessages = messages.filter((m) => m.role !== "system");
-  const body: Record<string, unknown> = { model, max_tokens: 8096, messages: userMessages, stream: true };
+  const body: Record<string, unknown> = { model, max_tokens: opts.max_tokens ?? ANTHROPIC_MAX_TOKENS, messages: userMessages, stream: true };
+  if (opts.temperature != null) body.temperature = opts.temperature;
+  if (opts.top_p != null)        body.top_p       = opts.top_p;
   if (systemMsg) body.system = systemMsg;
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",

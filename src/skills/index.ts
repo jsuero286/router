@@ -49,7 +49,7 @@ function buildSkillModelMap(skillName: string, fm: SkillFrontmatter): void {
   MODEL_MAP[`${skillName}-4070`]        = [{ nodeName: "gpu4070", model: fallbackModel }];
   MODEL_MAP[`${skillName}-4070-reason`] = [{ nodeName: "gpu4070", model: "deepseek-r1:14b" }];
   MODEL_MAP[`${skillName}-gemini`]      = [{ nodeName: "gemini",  model: "gemini-2.5-flash" }];
-  MODEL_MAP[`${skillName}-claude`]      = [{ nodeName: "claude",  model: "claude-sonnet-4-5" }];
+  MODEL_MAP[`${skillName}-claude`]      = [{ nodeName: "claude",  model: "claude-sonnet-4-6" }];
 }
 
 export function loadSkills(): void {
@@ -88,12 +88,20 @@ export function loadSkills(): void {
 }
 
 export function extractSkill(modelAlias: string): string | null {
+  // Match exacto primero
+  if (SKILLS[modelAlias]) return modelAlias;
+
+  // Para sufijos (ej: "debug-mac"), elegir el skill con nombre más largo que coincida
+  // para evitar que "debug" matchee antes que "debug-expert" si ambos existen
+  let best: string | null = null;
   for (const skillName of Object.keys(SKILLS)) {
-    if (modelAlias.startsWith(skillName + "-") || modelAlias === skillName) {
-      return skillName;
+    if (modelAlias.startsWith(skillName + "-")) {
+      if (!best || skillName.length > best.length) {
+        best = skillName;
+      }
     }
   }
-  return null;
+  return best;
 }
 
 export function injectSkill(messages: import("../types").ChatMessage[], skillName: string): import("../types").ChatMessage[] {
@@ -116,15 +124,43 @@ export function getSkillCacheTtl(skillName: string | null): number {
 
 export function watchSkills(): void {
   if (!fs.existsSync(SKILLS_DIR)) return;
+
   let reloadDebounce: ReturnType<typeof setTimeout> | null = null;
-  fs.watch(SKILLS_DIR, (_event, filename) => {
-    if (!filename?.endsWith(".md")) return;
+  let knownFiles = new Set(
+    fs.readdirSync(SKILLS_DIR).filter((f) => f.endsWith(".md"))
+  );
+
+  function scheduleReload(reason: string): void {
     if (reloadDebounce) clearTimeout(reloadDebounce);
     reloadDebounce = setTimeout(() => {
-      console.log(`[SKILLS] Cambio detectado en "${filename}" — recargando skills...`);
+      console.log(`[SKILLS] ${reason} — recargando skills...`);
       loadSkills();
       console.log(`[SKILLS] Skills recargadas: ${Object.keys(SKILLS).join(", ") || "ninguna"}`);
     }, 300);
+  }
+
+  // fs.watch detecta cambios en ficheros existentes (rápido)
+  fs.watch(SKILLS_DIR, (_event, filename) => {
+    if (filename?.endsWith(".md")) scheduleReload(`Cambio en "${filename}"`);
   });
-  console.log(`[SKILLS] 👀 Watching ${SKILLS_DIR}`);
+
+  // Polling ligero para detectar ficheros nuevos o eliminados (cada 5s)
+  setInterval(() => {
+    if (!fs.existsSync(SKILLS_DIR)) return;
+    const current = new Set(
+      fs.readdirSync(SKILLS_DIR).filter((f) => f.endsWith(".md"))
+    );
+    const added   = [...current].filter((f) => !knownFiles.has(f));
+    const removed = [...knownFiles].filter((f) => !current.has(f));
+    if (added.length > 0 || removed.length > 0) {
+      knownFiles = current;
+      const msg = [
+        ...added.map((f) => `+${f}`),
+        ...removed.map((f) => `-${f}`),
+      ].join(", ");
+      scheduleReload(`Ficheros modificados: ${msg}`);
+    }
+  }, 5000);
+
+  console.log(`[SKILLS] 👀 Watching ${SKILLS_DIR} (fs.watch + polling 5s)`);
 }
