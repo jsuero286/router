@@ -41,27 +41,6 @@ function openaiResponse(model: string, content: string, promptTokens = -1, compl
 }
 
 // =========================
-// 📊 ACUMULADOR DE USO GLOBAL
-// =========================
-
-const globalUsage = {
-  requests:        0,
-  totalCostUsd:    0,
-  tokensByModel:   {} as Record<string, { input: number; output: number }>,
-  startedAt:       Date.now(),
-};
-
-export function trackUsage(model: string, inputTokens: number, completionTokens: number, costUsd: number): void {
-  globalUsage.requests++;
-  globalUsage.totalCostUsd += costUsd;
-  if (!globalUsage.tokensByModel[model]) {
-    globalUsage.tokensByModel[model] = { input: 0, output: 0 };
-  }
-  if (inputTokens > 0)      globalUsage.tokensByModel[model].input  += inputTokens;
-  if (completionTokens > 0) globalUsage.tokensByModel[model].output += completionTokens;
-}
-
-// =========================
 // 🔥 CHAT HANDLER
 // =========================
 
@@ -219,7 +198,6 @@ async function handleChat(data: ChatRequest, reply: FastifyReply, req: FastifyRe
       COST_USD_inc({ model: selected.model }, cost);
       console.log(`[COST]  ${selected.model} ~$${cost.toFixed(6)}`);
     }
-    trackUsage(selected.model, inputTokens, completionTokens, cost);
 
     await setCache(messages, resolvedModel, content, getSkillCacheTtl(skillName));
 
@@ -308,17 +286,6 @@ app.delete("/v1/conversation", async (req: FastifyRequest, reply: FastifyReply) 
   await deleteConversation(sid);
   console.log(`[HISTORY] Conversación eliminada: ${sid.slice(5, 13)}…`);
   return reply.send({ deleted: true, session_id: sid });
-});
-
-app.get("/v1/usage", async (_req, reply) => {
-  const uptimeSec = Math.floor((Date.now() - globalUsage.startedAt) / 1000);
-  return reply.send({
-    uptime_seconds:   uptimeSec,
-    requests:         globalUsage.requests,
-    total_cost_usd:   parseFloat(globalUsage.totalCostUsd.toFixed(6)),
-    tokens_by_model:  globalUsage.tokensByModel,
-    started_at:       new Date(globalUsage.startedAt).toISOString(),
-  });
 });
 
 app.get("/health", async (_req, reply) => {
