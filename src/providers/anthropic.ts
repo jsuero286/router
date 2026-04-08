@@ -1,4 +1,4 @@
-import { ANTHROPIC_API_KEY } from "../config";
+import { ANTHROPIC_API_KEY, ANTHROPIC_MAX_TOKENS } from "../config";
 import { TOKENS_PER_SEC_observe } from "../metrics";
 import type { ChatMessage, OllamaResponse } from "../types";
 
@@ -10,7 +10,7 @@ export async function callAnthropic(model: string, messages: ChatMessage[]): Pro
   if (!ANTHROPIC_API_KEY) return { error: "ANTHROPIC_API_KEY not set" };
   const systemMsg    = messages.find((m) => m.role === "system")?.content;
   const userMessages = messages.filter((m) => m.role !== "system");
-  const body: Record<string, unknown> = { model, max_tokens: 8096, messages: userMessages };
+  const body: Record<string, unknown> = { model, max_tokens: ANTHROPIC_MAX_TOKENS, messages: userMessages };
   if (systemMsg) body.system = systemMsg;
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -39,7 +39,7 @@ export async function* streamAnthropic(model: string, messages: ChatMessage[]): 
   }
   const systemMsg    = messages.find((m) => m.role === "system")?.content;
   const userMessages = messages.filter((m) => m.role !== "system");
-  const body: Record<string, unknown> = { model, max_tokens: 8096, messages: userMessages, stream: true };
+  const body: Record<string, unknown> = { model, max_tokens: ANTHROPIC_MAX_TOKENS, messages: userMessages, stream: true };
   if (systemMsg) body.system = systemMsg;
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",

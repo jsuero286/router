@@ -105,11 +105,39 @@ async function handleChat(data: ChatRequest, reply: FastifyReply, req: FastifyRe
     return reply.status(503).send({ error: "No nodes available" });
   }
 
-  // ── STREAM (sin retry: los headers ya se enviaron) ───────────
+  // ── STREAM con retry pre-headers ────────────────────────────
   if (stream) {
-    const selected = candidates[0];
-    NODE_SELECTED_inc({ node: selected.nodeName });
-    console.log(`[ROUTER] ${model} → ${selected.model} @ ${selected.nodeName} (stream)`);
+    // Probe rápido antes de abrir el stream para poder hacer retry
+    async function probeNode(selected: (typeof candidates)[0]): Promise<boolean> {
+      if (selected.config.type === "anthropic") return !!ANTHROPIC_API_KEY;
+      if (selected.config.type === "google")    return !!GOOGLE_API_KEY;
+      try {
+        const res = await fetch(`${selected.config.url}/api/ps`, {
+          signal: AbortSignal.timeout(2000),
+        });
+        return res.ok;
+      } catch {
+        return false;
+      }
+    }
+
+    let streamSelected: (typeof candidates)[0] | null = null;
+    for (const candidate of candidates) {
+      const alive = await probeNode(candidate);
+      if (alive) {
+        streamSelected = candidate;
+        break;
+      }
+      console.warn(`[STREAM-RETRY] ${candidate.nodeName} no responde — probando siguiente`);
+    }
+
+    if (!streamSelected) {
+      ERROR_COUNT_inc();
+      return reply.status(503).send({ error: "No nodes available for streaming" });
+    }
+
+    NODE_SELECTED_inc({ node: streamSelected.nodeName });
+    console.log(`[ROUTER] ${model} → ${streamSelected.model} @ ${streamSelected.nodeName} (stream)`);
     reply.raw.writeHead(200, {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
@@ -117,9 +145,9 @@ async function handleChat(data: ChatRequest, reply: FastifyReply, req: FastifyRe
       "X-Accel-Buffering": "no",
     });
     const generator =
-      selected.config.type === "anthropic" ? streamAnthropic(selected.model, messages) :
-      selected.config.type === "google"    ? streamGoogle(selected.model, messages) :
-                                             streamOllama(selected.config.url, selected.model, messages);
+      streamSelected.config.type === "anthropic" ? streamAnthropic(streamSelected.model, messages) :
+      streamSelected.config.type === "google"    ? streamGoogle(streamSelected.model, messages) :
+                                                   streamOllama(streamSelected.config.url, streamSelected.model, messages);
     for await (const chunk of generator) reply.raw.write(chunk);
     reply.raw.end();
     return;
@@ -333,7 +361,7 @@ export async function startServer(): Promise<void> {
   app.listen({ port: PORT, host: "0.0.0.0" }, (err) => {
     if (err) { app.log.error(err); process.exit(1); }
     console.log(`🚀 Router running on http://0.0.0.0:${PORT}`);
-    console.log(`   Anthropic: ${ANTHROPIC_API_KEY ? "✅ configurado" : "❌ no definida"}`);
+    console.log(`   Anthropic: ${ANTHROPIC_API_KEY ? "✅ configurado" : "❌ no definida"} (max_tokens: ${ANTHROPIC_MAX_TOKENS})`);
     console.log(`   Google:    ${GOOGLE_API_KEY    ? "✅ configurado" : "❌ no definida"}`);
     console.log(`   Redis:     ${REDIS_HOST}:${REDIS_PORT}`);
     console.log(`   Cache TTL: ${CACHE_TTL}s (global)`);

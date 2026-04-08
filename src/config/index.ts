@@ -6,6 +6,7 @@ import type { NodeConfig, NodeEntry } from "../types";
 // =========================
 
 export const ANTHROPIC_API_KEY       = process.env.ANTHROPIC_API_KEY ?? "";
+export const ANTHROPIC_MAX_TOKENS    = parseInt(process.env.ANTHROPIC_MAX_TOKENS ?? "8096", 10);
 export const GOOGLE_API_KEY          = process.env.GOOGLE_API_KEY ?? "";
 export const SKILLS_DIR              = process.env.SKILLS_DIR ?? path.join(process.cwd(), "skills");
 export const METRICS_ENABLED         = (process.env.METRICS_ENABLED ?? "true") === "true";
