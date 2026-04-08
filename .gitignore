@@ -49,3 +49,4 @@ yarn.lock
 .env
 
 CLAUDE.md
+.aider*
