@@ -320,6 +320,16 @@ export function startServer(): void {
   loadSkills();
   watchSkills();
 
+  const shutdown = async (signal: string) => {
+    console.log(`[SERVER] ${signal} recibido — cerrando conexiones...`);
+    await app.close();
+    console.log("[SERVER] Servidor cerrado correctamente");
+    process.exit(0);
+  };
+
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT",  () => shutdown("SIGINT"));
+
   app.listen({ port: PORT, host: "0.0.0.0" }, (err) => {
     if (err) { app.log.error(err); process.exit(1); }
     console.log(`🚀 Router running on http://0.0.0.0:${PORT}`);
