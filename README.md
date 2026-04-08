@@ -93,6 +93,10 @@ Crea un fichero `.env` en la raíz del proyecto:
 # Puerto del servidor
 PORT=8000
 
+# Autenticación — OBLIGATORIA, el router no arranca sin ella
+# Genera un token con: openssl rand -hex 32
+ROUTER_API_KEY=tu-token-aqui
+
 # API Keys de proveedores cloud
 ANTHROPIC_API_KEY=sk-ant-...
 GOOGLE_API_KEY=AIza...
@@ -107,6 +111,15 @@ SKILLS_DIR=/opt/llm-router/skills
 OLLAMA_KEEP_ALIVE=1h     # tiempo que el modelo permanece en VRAM tras la última petición (-1 = siempre)
 OLLAMA_NUM_CTX=0         # tamaño de contexto (0 = usa el default del modelo)
 WARMUP_ON_START=true     # precalentar modelos en VRAM al arrancar el router
+
+# Clasificador de complejidad (solo afecta al alias "auto")
+CLASSIFIER_ENABLED=true
+CLASSIFIER_NODE_URL=http://ai-mac.casa.lan  # nodo donde corre el clasificador
+CLASSIFIER_MODEL=qwen2.5:0.5b              # modelo pequeño y rápido
+
+# Historial de conversación (requiere Redis)
+CONVERSATION_TTL=3600        # segundos hasta que expira una sesión inactiva
+CONVERSATION_MAX_TURNS=50    # máximo de turnos guardados por sesión
 ```
 
 Los nodos y modelos se configuran directamente en `src/router.ts`:
@@ -119,6 +132,66 @@ const NODES: Record<string, NodeConfig> = {
   claude:  { url: "https://api.anthropic.com",                 type: "anthropic" },
   gemini:  { url: "https://generativelanguage.googleapis.com", type: "google" },
 };
+```
+
+## Autenticación
+
+El router requiere autenticación mediante `Authorization: Bearer <token>` en todas las peticiones excepto `/health`, `/metrics`, `/skills` y `/v1` (rutas públicas para Prometheus y healthchecks).
+
+Si `ROUTER_API_KEY` no está definida en el entorno, **el proceso no arranca**.
+
+Genera un token seguro:
+
+```bash
+openssl rand -hex 32
+```
+
+### Aider
+
+Añade `--openai-api-key` a tus aliases en `aliases/aliases.zsh`:
+
+```bash
+alias aider-auto="aider --openai-api-key tu-token --openai-api-base http://router.casa.lan/v1 --model openai/auto"
+```
+
+### Open WebUI
+
+En **Settings → Admin → Connections → OpenAI API**, sustituye `none` por tu token en el campo API Key.
+
+### curl
+
+```bash
+curl http://router.casa.lan/v1/chat/completions \
+  -H "Authorization: Bearer tu-token" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "auto", "messages": [{"role": "user", "content": "Hola"}]}'
+```
+
+## Routing por complejidad
+
+Cuando se usa el alias `auto`, el router clasifica la complejidad de la petición antes de enrutarla:
+
+| Complejidad | Alias resultante | Modelos |
+|---|---|---|
+| `simple` | `fast` | gpu5070 → qwen2.5-coder:7b, mac → qwen2.5-coder:1.5b |
+| `medium` | `auto` | gpu5070 → gpu4070 → mac → gemini → claude |
+| `complex` | `reasoning` | gpu4070 → deepseek-r1:14b, gemini-pro, claude-opus |
+
+La clasificación funciona en dos pasos:
+
+**1. Reglas rápidas (sin latencia):**
+- Mensajes cortos sin keywords técnicos → `simple`
+- Keywords de razonamiento (`refactor`, `arquitectura`, `debug`, `implementa`...) → `complex`
+- Mensajes muy largos (>1500 chars) → `complex`
+- Resto → dudoso, pasa al clasificador
+
+**2. Modelo local (solo si el paso 1 no decide):**
+- `qwen2.5:0.5b` en el nodo mac clasifica la query en <5s
+- Si el clasificador falla, usa `medium` como fallback — nunca bloquea la petición
+
+Para desactivar el modelo y usar solo reglas:
+```bash
+CLASSIFIER_ENABLED=false
 ```
 
 ## Optimización de velocidad (Ollama)
@@ -184,14 +257,16 @@ WantedBy=multi-user.target
 
 ## Endpoints
 
-| Método | Ruta | Descripción |
-|---|---|---|
-| POST | `/v1/chat/completions` | Chat compatible OpenAI |
-| GET | `/v1/models` | Lista de todos los modelos disponibles |
-| GET | `/v1` | Health check básico |
-| GET | `/health` | Estado de nodos, skills y caché |
-| GET | `/skills` | Lista de skills cargados y sus modelos |
-| GET | `/metrics` | Métricas Prometheus (si `METRICS_ENABLED=true`) |
+| Método | Ruta | Auth | Descripción |
+|---|---|---|---|
+| POST | `/v1/chat/completions` | ✅ | Chat compatible OpenAI |
+| GET | `/v1/models` | ✅ | Lista de todos los modelos disponibles |
+| GET | `/v1/conversation` | ✅ | Ver historial y contexto de la sesión |
+| DELETE | `/v1/conversation` | ✅ | Borrar sesión y empezar de cero |
+| GET | `/v1` | ❌ | Health check básico |
+| GET | `/health` | ❌ | Estado de nodos, skills y caché |
+| GET | `/skills` | ❌ | Lista de skills cargados y sus modelos |
+| GET | `/metrics` | ❌ | Métricas Prometheus (si `METRICS_ENABLED=true`) |
 
 ## Caché
 
@@ -217,6 +292,32 @@ El endpoint `/health` muestra qué caché está activa:
 | `llm_node_load` | Carga actual de cada nodo |
 | `llm_errors_total` | Errores totales |
 | `llm_redis_errors_total` | Errores de Redis |
+
+---
+
+## Dashboard Grafana
+
+El fichero `grafana.json` en la raíz del proyecto contiene un dashboard preconfigurado con las siguientes secciones:
+
+- **Resumen** — total peticiones, latencia media, cache hit rate, coste estimado, errores y errores Redis
+- **Tráfico y latencia** — req/s por modelo + latencia p50/p95/p99
+- **Nodos** — peticiones por nodo en el tiempo + gauge de carga en VRAM (verde=libre, rojo=OFFLINE)
+- **Rendimiento de modelos** — tokens/segundo por modelo + distribución de peticiones
+- **Coste y caché** — coste acumulado por modelo (USD) + hits vs misses
+- **Detalle por modelo** — tabla resumen con peticiones, latencia, tok/s y coste
+
+### Importar
+
+1. En Grafana: **Dashboards → Import → Upload JSON file** → selecciona `grafana.json`
+2. En el selector de datasource elige tu instancia de Prometheus
+3. Importar
+
+El dashboard se refresca cada 30 segundos y muestra por defecto las últimas 6 horas.
+
+### Requisitos
+
+- Prometheus raspando `/metrics` del router (`METRICS_ENABLED=true`)
+- Datasource Prometheus configurado en Grafana apuntando a tu instancia
 
 ---
 
@@ -336,23 +437,53 @@ En **Settings → Admin → Connections → OpenAI API**:
 
 ---
 
+## Historial de conversación
+
+El router mantiene el contexto de conversación por sesión en Redis. La sesión se identifica automáticamente a partir de la API key, IP y User-Agent — no es necesario configurar nada en el cliente.
+
+Cada sesión guarda:
+- Historial de mensajes (hasta `CONVERSATION_MAX_TURNS` turnos)
+- Modelo y skill utilizados en el último turno
+- Coste acumulado estimado en USD
+- Timestamps de creación y última actividad
+
+Las sesiones expiran tras `CONVERSATION_TTL` segundos de inactividad (por defecto 1 hora).
+
+Si Redis no está disponible, el historial se desactiva automáticamente — el router sigue funcionando sin él.
+
+### Endpoints
+
+```bash
+# Ver historial y contexto de la sesión actual
+curl http://router.casa.lan/v1/conversation \
+  -H "Authorization: Bearer tu-token"
+
+# Borrar la sesión y empezar de cero
+curl -X DELETE http://router.casa.lan/v1/conversation \
+  -H "Authorization: Bearer tu-token"
+```
+
+La respuesta de cada `/v1/chat/completions` incluye un campo `session_id` que identifica la sesión activa.
+
 ## Uso con curl
 
 ```bash
 # Chat básico
 curl http://router.casa.lan/v1/chat/completions \
+  -H "Authorization: Bearer tu-token" \
   -H "Content-Type: application/json" \
   -d '{"model": "auto", "messages": [{"role": "user", "content": "Hola"}]}'
 
 # Con skill
 curl http://router.casa.lan/v1/chat/completions \
+  -H "Authorization: Bearer tu-token" \
   -H "Content-Type: application/json" \
   -d '{"model": "angular-expert-gemini", "messages": [{"role": "user", "content": "Explícame los signals de Angular 18"}]}'
 
-# Ver skills disponibles
+# Ver skills disponibles (ruta pública, sin auth)
 curl http://router.casa.lan/skills
 
-# Estado del sistema
+# Estado del sistema (ruta pública, sin auth)
 curl http://router.casa.lan/health
 ```
 
