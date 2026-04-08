@@ -8,7 +8,7 @@ import type { SkillEntry, SkillFrontmatter, NodeEntry } from "../types";
 // =========================
 
 export const SKILLS: Record<string, SkillEntry> = {};
-export let MODEL_MAP: Record<string, NodeEntry[]> = { ...BASE_MODEL_MAP };
+export const MODEL_MAP: Record<string, NodeEntry[]> = { ...BASE_MODEL_MAP };
 export const SKILL_CACHE_TTL: Record<string, number> = {};
 
 function parseFrontmatter(raw: string): { frontmatter: SkillFrontmatter; body: string } {
@@ -63,7 +63,8 @@ export function loadSkills(): void {
     return;
   }
 
-  MODEL_MAP = { ...BASE_MODEL_MAP };
+  for (const key of Object.keys(MODEL_MAP)) delete MODEL_MAP[key];
+  Object.assign(MODEL_MAP, BASE_MODEL_MAP);
   for (const key of Object.keys(SKILLS)) delete SKILLS[key];
 
   for (const file of files) {
