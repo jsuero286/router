@@ -56,6 +56,14 @@ redis.on("error", () => {
   _redisAvailable = false;
 });
 
+export async function connectRedis(): Promise<void> {
+  try {
+    await redis.connect();
+  } catch {
+    console.warn(`[CACHE] Redis no disponible en ${REDIS_HOST}:${REDIS_PORT} — operando con cache en memoria`);
+  }
+}
+
 export function cacheKey(messages: ChatMessage[], model: string): string {
   const raw = `${model}:${JSON.stringify(messages)}`;
   return crypto.createHash("sha256").update(raw).digest("hex");

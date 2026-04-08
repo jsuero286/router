@@ -12,7 +12,7 @@ import {
   REQUEST_COUNT_inc, REQUEST_LATENCY_observe, ERROR_COUNT_inc,
   NODE_SELECTED_inc, TOKENS_PER_SEC_observe, COST_USD_inc,
 } from "../metrics";
-import { getCache, setCache, isRedisAvailable } from "../cache";
+import { getCache, setCache, isRedisAvailable, connectRedis } from "../cache";
 import { SKILLS, MODEL_MAP, SKILL_CACHE_TTL, loadSkills, watchSkills, extractSkill, injectSkill, getSkillCacheTtl } from "../skills";
 import { classifyComplexity, complexityToAlias } from "../classifier";
 import { sessionId, getConversation, saveConversation, deleteConversation } from "../history";
@@ -316,7 +316,9 @@ async function warmupAll(): Promise<void> {
   console.log("[WARMUP] Completado");
 }
 
-export function startServer(): void {
+export async function startServer(): Promise<void> {
+  await connectRedis();
+
   loadSkills();
   watchSkills();
 
