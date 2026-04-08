@@ -9,18 +9,35 @@ export const registry = new Registry();
 
 const noop = () => {};
 
-export let REQUEST_COUNT_inc:       (labels: { model: string }) => void;
-export let REQUEST_LATENCY_observe: (labels: { model: string }, value: number) => void;
-export let CACHE_HITS_inc:          () => void;
-export let CACHE_MISS_inc:          () => void;
-export let ERROR_COUNT_inc:         () => void;
-export let NODE_SELECTED_inc:       (labels: { node: string }) => void;
-export let NODE_LOAD_set:           (labels: { node: string }, value: number) => void;
-export let REDIS_ERRORS_inc:        () => void;
-export let TOKENS_PER_SEC_observe:  (labels: { model: string }, value: number) => void;
-export let COST_USD_inc:            (labels: { model: string }, value: number) => void;
+interface Metrics {
+  REQUEST_COUNT_inc:       (labels: { model: string }) => void;
+  REQUEST_LATENCY_observe: (labels: { model: string }, value: number) => void;
+  CACHE_HITS_inc:          () => void;
+  CACHE_MISS_inc:          () => void;
+  ERROR_COUNT_inc:         () => void;
+  NODE_SELECTED_inc:       (labels: { node: string }) => void;
+  NODE_LOAD_set:           (labels: { node: string }, value: number) => void;
+  REDIS_ERRORS_inc:        () => void;
+  TOKENS_PER_SEC_observe:  (labels: { model: string }, value: number) => void;
+  COST_USD_inc:            (labels: { model: string }, value: number) => void;
+}
 
-if (METRICS_ENABLED) {
+function createMetrics(): Metrics {
+  if (!METRICS_ENABLED) {
+    return {
+      REQUEST_COUNT_inc:       noop,
+      REQUEST_LATENCY_observe: noop,
+      CACHE_HITS_inc:          noop,
+      CACHE_MISS_inc:          noop,
+      ERROR_COUNT_inc:         noop,
+      NODE_SELECTED_inc:       noop,
+      NODE_LOAD_set:           noop,
+      REDIS_ERRORS_inc:        noop,
+      TOKENS_PER_SEC_observe:  noop,
+      COST_USD_inc:            noop,
+    };
+  }
+
   collectDefaultMetrics({ register: registry });
 
   const REQUEST_COUNT = new Counter({
@@ -62,25 +79,29 @@ if (METRICS_ENABLED) {
     labelNames: ["model"] as const, registers: [registry],
   });
 
-  REQUEST_COUNT_inc       = (l) => REQUEST_COUNT.labels(l).inc();
-  REQUEST_LATENCY_observe = (l, v) => REQUEST_LATENCY.labels(l).observe(v);
-  CACHE_HITS_inc          = () => CACHE_HITS.inc();
-  CACHE_MISS_inc          = () => CACHE_MISS.inc();
-  ERROR_COUNT_inc         = () => ERROR_COUNT.inc();
-  NODE_SELECTED_inc       = (l) => NODE_SELECTED.labels(l).inc();
-  NODE_LOAD_set           = (l, v) => NODE_LOAD.labels(l).set(v);
-  REDIS_ERRORS_inc        = () => REDIS_ERRORS.inc();
-  TOKENS_PER_SEC_observe  = (l, v) => TOKENS_PER_SEC.labels(l).observe(v);
-  COST_USD_inc            = (l, v) => COST_USD.labels(l).inc(v);
-} else {
-  REQUEST_COUNT_inc       = noop;
-  REQUEST_LATENCY_observe = noop;
-  CACHE_HITS_inc          = noop;
-  CACHE_MISS_inc          = noop;
-  ERROR_COUNT_inc         = noop;
-  NODE_SELECTED_inc       = noop;
-  NODE_LOAD_set           = noop;
-  REDIS_ERRORS_inc        = noop;
-  TOKENS_PER_SEC_observe  = noop;
-  COST_USD_inc            = noop;
+  return {
+    REQUEST_COUNT_inc:       (l) => REQUEST_COUNT.labels(l).inc(),
+    REQUEST_LATENCY_observe: (l, v) => REQUEST_LATENCY.labels(l).observe(v),
+    CACHE_HITS_inc:          () => CACHE_HITS.inc(),
+    CACHE_MISS_inc:          () => CACHE_MISS.inc(),
+    ERROR_COUNT_inc:         () => ERROR_COUNT.inc(),
+    NODE_SELECTED_inc:       (l) => NODE_SELECTED.labels(l).inc(),
+    NODE_LOAD_set:           (l, v) => NODE_LOAD.labels(l).set(v),
+    REDIS_ERRORS_inc:        () => REDIS_ERRORS.inc(),
+    TOKENS_PER_SEC_observe:  (l, v) => TOKENS_PER_SEC.labels(l).observe(v),
+    COST_USD_inc:            (l, v) => COST_USD.labels(l).inc(v),
+  };
 }
+
+export const {
+  REQUEST_COUNT_inc,
+  REQUEST_LATENCY_observe,
+  CACHE_HITS_inc,
+  CACHE_MISS_inc,
+  ERROR_COUNT_inc,
+  NODE_SELECTED_inc,
+  NODE_LOAD_set,
+  REDIS_ERRORS_inc,
+  TOKENS_PER_SEC_observe,
+  COST_USD_inc,
+} = createMetrics();
