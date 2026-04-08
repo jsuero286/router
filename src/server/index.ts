@@ -1,4 +1,5 @@
 import Fastify, { FastifyRequest, FastifyReply } from "fastify";
+import * as crypto from "crypto";
 import {
   ROUTER_API_KEY, METRICS_ENABLED, CACHE_TTL, PORT,
   ANTHROPIC_API_KEY, GOOGLE_API_KEY, REDIS_HOST, REDIS_PORT,
@@ -198,7 +199,10 @@ app.addHook("onRequest", async (req, reply) => {
   if (publicRoutes.includes(req.url)) return;
   const auth  = req.headers["authorization"] ?? "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
-  if (token !== ROUTER_API_KEY) {
+  const valid =
+    token.length === ROUTER_API_KEY.length &&
+    crypto.timingSafeEqual(Buffer.from(token), Buffer.from(ROUTER_API_KEY));
+  if (!valid) {
     return reply.status(401).send({
       error: { message: "Invalid API key", type: "invalid_request_error", code: "invalid_api_key" },
     });
