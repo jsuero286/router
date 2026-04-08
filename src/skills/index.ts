@@ -88,12 +88,20 @@ export function loadSkills(): void {
 }
 
 export function extractSkill(modelAlias: string): string | null {
+  // Match exacto primero
+  if (SKILLS[modelAlias]) return modelAlias;
+
+  // Para sufijos (ej: "debug-mac"), elegir el skill con nombre más largo que coincida
+  // para evitar que "debug" matchee antes que "debug-expert" si ambos existen
+  let best: string | null = null;
   for (const skillName of Object.keys(SKILLS)) {
-    if (modelAlias.startsWith(skillName + "-") || modelAlias === skillName) {
-      return skillName;
+    if (modelAlias.startsWith(skillName + "-")) {
+      if (!best || skillName.length > best.length) {
+        best = skillName;
+      }
     }
   }
-  return null;
+  return best;
 }
 
 export function injectSkill(messages: import("../types").ChatMessage[], skillName: string): import("../types").ChatMessage[] {
