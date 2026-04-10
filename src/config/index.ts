@@ -60,7 +60,7 @@ export const NODES: Record<string, NodeConfig> = {
   mac:     { url: "http://ai-mac.casa.lan",  type: "ollama" },
   claude:  { url: "https://api.anthropic.com",                 type: "anthropic" },
   gemini:  { url: "https://generativelanguage.googleapis.com", type: "google" },
-  "llama-cluster": { url: "http://192.168.50.79:8080", type: "ollama" },
+  "llama-cluster": { url: "http://ai-5070.casa.lan:8080", type: "ollama" },
 };
 
 // =========================
@@ -80,7 +80,6 @@ export const BASE_MODEL_MAP: Record<string, NodeEntry[]> = {
     { nodeName: "mac",     model: "qwen2.5-coder:1.5b" },
   ],
   reasoning: [
-    { nodeName: "gpu5070", model: "deepseek-r1:14b" },
     { nodeName: "gpu4070", model: "deepseek-r1:14b" },
     { nodeName: "mac",     model: "deepseek-r1:14b" },
     { nodeName: "gemini",  model: "gemini-2.5-pro" },
