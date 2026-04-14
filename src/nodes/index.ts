@@ -11,7 +11,7 @@ export async function getNodeLoad(nodeConfig: NodeConfig): Promise<number> {
   if (nodeConfig.type !== "ollama") return 0;
   try {
     const res = await fetch(`${nodeConfig.url}/api/ps`, {
-      signal: AbortSignal.timeout(2000),
+      signal: AbortSignal.timeout(500),
     });
     if (!res.ok) return 999;
     const data = (await res.json()) as OllamaPsResponse;
