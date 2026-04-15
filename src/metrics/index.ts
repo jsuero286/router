@@ -20,6 +20,8 @@ interface Metrics {
   REDIS_ERRORS_inc:        () => void;
   TOKENS_PER_SEC_observe:  (labels: { model: string }, value: number) => void;
   COST_USD_inc:            (labels: { model: string }, value: number) => void;
+  COMPRESSION_RUNS_inc:    (labels: { mode: string; result: string }) => void;
+  COMPRESSION_RATIO_observe: (labels: { mode: string }, value: number) => void;
 }
 
 function createMetrics(): Metrics {
@@ -35,6 +37,8 @@ function createMetrics(): Metrics {
       REDIS_ERRORS_inc:        noop,
       TOKENS_PER_SEC_observe:  noop,
       COST_USD_inc:            noop,
+      COMPRESSION_RUNS_inc:    noop,
+      COMPRESSION_RATIO_observe: noop,
     };
   }
 
@@ -78,18 +82,30 @@ function createMetrics(): Metrics {
     name: "llm_cost_usd_total", help: "Estimated cost in USD",
     labelNames: ["model"] as const, registers: [registry],
   });
+  const COMPRESSION_RUNS = new Counter({
+    name: "llm_compression_runs_total", help: "Compression pipeline runs",
+    labelNames: ["mode", "result"] as const, registers: [registry],
+  });
+  const COMPRESSION_RATIO_HIST = new Histogram({
+    name: "llm_compression_ratio", help: "Token reduction ratio achieved by compression",
+    labelNames: ["mode"] as const,
+    buckets: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
+    registers: [registry],
+  });
 
   return {
-    REQUEST_COUNT_inc:       (l) => REQUEST_COUNT.labels(l).inc(),
-    REQUEST_LATENCY_observe: (l, v) => REQUEST_LATENCY.labels(l).observe(v),
-    CACHE_HITS_inc:          () => CACHE_HITS.inc(),
-    CACHE_MISS_inc:          () => CACHE_MISS.inc(),
-    ERROR_COUNT_inc:         () => ERROR_COUNT.inc(),
-    NODE_SELECTED_inc:       (l) => NODE_SELECTED.labels(l).inc(),
-    NODE_LOAD_set:           (l, v) => NODE_LOAD.labels(l).set(v),
-    REDIS_ERRORS_inc:        () => REDIS_ERRORS.inc(),
-    TOKENS_PER_SEC_observe:  (l, v) => TOKENS_PER_SEC.labels(l).observe(v),
-    COST_USD_inc:            (l, v) => COST_USD.labels(l).inc(v),
+    REQUEST_COUNT_inc:         (l) => REQUEST_COUNT.labels(l).inc(),
+    REQUEST_LATENCY_observe:   (l, v) => REQUEST_LATENCY.labels(l).observe(v),
+    CACHE_HITS_inc:            () => CACHE_HITS.inc(),
+    CACHE_MISS_inc:            () => CACHE_MISS.inc(),
+    ERROR_COUNT_inc:           () => ERROR_COUNT.inc(),
+    NODE_SELECTED_inc:         (l) => NODE_SELECTED.labels(l).inc(),
+    NODE_LOAD_set:             (l, v) => NODE_LOAD.labels(l).set(v),
+    REDIS_ERRORS_inc:          () => REDIS_ERRORS.inc(),
+    TOKENS_PER_SEC_observe:    (l, v) => TOKENS_PER_SEC.labels(l).observe(v),
+    COST_USD_inc:              (l, v) => COST_USD.labels(l).inc(v),
+    COMPRESSION_RUNS_inc:      (l) => COMPRESSION_RUNS.labels(l).inc(),
+    COMPRESSION_RATIO_observe: (l, v) => COMPRESSION_RATIO_HIST.labels(l).observe(v),
   };
 }
 
@@ -104,4 +120,6 @@ export const {
   REDIS_ERRORS_inc,
   TOKENS_PER_SEC_observe,
   COST_USD_inc,
+  COMPRESSION_RUNS_inc,
+  COMPRESSION_RATIO_observe,
 } = createMetrics();

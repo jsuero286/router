@@ -2,6 +2,7 @@ import {
   COMPRESSION_MODE, COMPRESSION_MIN_TOKENS, COMPRESSION_RATIO,
   COMPRESSION_NODE_URL, COMPRESSION_MODEL, COMPRESSION_BACKEND,
 } from "../config";
+import { COMPRESSION_RUNS_inc, COMPRESSION_RATIO_observe } from "../metrics";
 import type { ChatMessage, CompressionMode } from "../types";
 
 // =========================
@@ -255,6 +256,7 @@ export async function compressHistory(messages: ChatMessage[]): Promise<ChatMess
   const estimated = estimateTokens(messages);
   if (estimated < COMPRESSION_MIN_TOKENS) {
     console.log(`[COMPRESSION] Skipped — ${estimated} tokens < min ${COMPRESSION_MIN_TOKENS}`);
+    COMPRESSION_RUNS_inc({ mode, result: "skipped" });
     return messages;
   }
 
@@ -263,13 +265,22 @@ export async function compressHistory(messages: ChatMessage[]): Promise<ChatMess
   if (mode === "history" || mode === "both") {
     const before = result.length;
     result = await compressWithHistory(result);
-    console.log(`[COMPRESSION] history: ${before} msgs → ${result.length} msgs (~${estimateTokens(messages)} → ~${estimateTokens(result)} tokens)`);
+    const tokensBefore = estimateTokens(messages);
+    const tokensAfter  = estimateTokens(result);
+    console.log(`[COMPRESSION] history: ${before} msgs → ${result.length} msgs (~${tokensBefore} → ~${tokensAfter} tokens)`);
+    const ratioAchieved = tokensAfter / Math.max(tokensBefore, 1);
+    COMPRESSION_RATIO_observe({ mode: "history" }, ratioAchieved);
+    COMPRESSION_RUNS_inc({ mode: "history", result: result.length < before ? "ok" : "fallback" });
   }
 
   if (mode === "llmlingua" || mode === "both") {
     const beforeTokens = estimateTokens(result);
     result = await compressWithLLMLingua(result);
-    console.log(`[COMPRESSION] llmlingua: ~${beforeTokens} → ~${estimateTokens(result)} tokens`);
+    const afterTokens  = estimateTokens(result);
+    console.log(`[COMPRESSION] llmlingua: ~${beforeTokens} → ~${afterTokens} tokens`);
+    const ratioAchieved = afterTokens / Math.max(beforeTokens, 1);
+    COMPRESSION_RATIO_observe({ mode: "llmlingua" }, ratioAchieved);
+    COMPRESSION_RUNS_inc({ mode: "llmlingua", result: afterTokens < beforeTokens ? "ok" : "fallback" });
   }
 
   return result;
