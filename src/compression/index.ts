@@ -144,11 +144,13 @@ async function getLLMLinguaCompressor(): Promise<PromptCompressor | null> {
     console.log("[COMPRESSION] llmlingua: cargando modelo TinyBERT...");
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const { LLMLingua2 }  = await import("@atjsh/llmlingua-2" as any);
+    const { LLMLingua2 }   = await import("@atjsh/llmlingua-2" as any);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const { Tiktoken }    = await import("js-tiktoken/lite" as any);
+    const tiktoken         = await import("js-tiktoken" as any);
+    const { Tiktoken }     = tiktoken;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const o200k_base      = ((await import("js-tiktoken/ranks/o200k_base" as any)) as any).default;
+    const ranksModule      = await import("js-tiktoken/ranks/o200k_base" as any);
+    const o200k_base       = ranksModule.default ?? ranksModule;
 
     const oaiTokenizer = new Tiktoken(o200k_base);
 
