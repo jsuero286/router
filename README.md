@@ -292,6 +292,9 @@ El endpoint `/health` muestra qué caché está activa:
 | `llm_node_load` | Carga actual de cada nodo |
 | `llm_errors_total` | Errores totales |
 | `llm_redis_errors_total` | Errores de Redis |
+| `llm_cost_usd_total` | Coste estimado acumulado por modelo (cloud) |
+| `llm_compression_runs_total` | Runs de compresión por modo y resultado |
+| `llm_compression_ratio` | Ratio de reducción de tokens alcanzado |
 
 ---
 
@@ -465,7 +468,93 @@ curl -X DELETE http://router.casa.lan/v1/conversation \
 
 La respuesta de cada `/v1/chat/completions` incluye un campo `session_id` que identifica la sesión activa.
 
-## Uso con curl
+## Compresión de historial
+
+El router incluye un pipeline de compresión configurable que reduce el tamaño del historial antes de enviarlo al modelo. Útil para conversaciones largas que superan el contexto o generan latencia innecesaria.
+
+### Modos disponibles
+
+| Modo | Descripción |
+|---|---|
+| `none` | Sin compresión (por defecto) |
+| `history` | Resume los mensajes más antiguos usando un LLM pequeño |
+| `llmlingua` | Comprime cada mensaje eliminando tokens poco relevantes con TinyBERT |
+| `both` | Aplica `history` primero, luego `llmlingua` al resultado |
+
+### Variables de entorno
+
+```bash
+# Modo de compresión
+COMPRESSION_MODE=history        # none | history | llmlingua | both
+
+# Umbral mínimo — no comprime si el historial es menor a N tokens estimados
+COMPRESSION_MIN_TOKENS=500
+
+# Ratio de compresión (0.5 = conservar el 50% de los tokens)
+COMPRESSION_RATIO=0.5
+
+# Nodo y backend para el modo history
+COMPRESSION_NODE_URL=http://peque.casa.lan   # nodo con llama.cpp o Ollama
+COMPRESSION_BACKEND=llamacpp                 # llamacpp | ollama
+COMPRESSION_MODEL=qwen2.5:3b                # solo para backend ollama
+```
+
+### Modo `history`
+
+Divide el historial en dos bloques: el **tail** (turnos recientes, se pasa íntegro) y el **head** (mensajes más antiguos, candidatos a compresión). El head se resume en un único mensaje de contexto usando el LLM configurado en `COMPRESSION_NODE_URL`.
+
+El resumen se inyecta como mensaje de usuario con el prefijo `[Context from earlier in this conversation]:`.
+
+Requiere un nodo con `llama.cpp server` o `Ollama` disponible. Si el nodo no responde, el pipeline hace fallback a los mensajes originales sin bloquear la petición.
+
+```bash
+# Con llama.cpp (recomendado para CPU puro)
+COMPRESSION_BACKEND=llamacpp
+COMPRESSION_NODE_URL=http://peque.casa.lan
+
+# Con Ollama
+COMPRESSION_BACKEND=ollama
+COMPRESSION_NODE_URL=http://ai-mac.casa.lan
+COMPRESSION_MODEL=qwen2.5:3b
+```
+
+### Modo `llmlingua`
+
+Usa el modelo TinyBERT (`atjsh/llmlingua-2-js-tinybert-meetingbank`, 57 MB) para clasificar la relevancia de cada token en cada mensaje y eliminar los menos informativos. El modelo se descarga automáticamente de HuggingFace la primera vez y se cachea localmente.
+
+Corre en el mismo proceso Node.js del router — no requiere ningún servicio externo.
+
+El modelo se precarga en background al arrancar si `COMPRESSION_MODE=llmlingua` o `both`. Los logs de carga:
+
+```
+[COMPRESSION] llmlingua: cargando TinyBERT...
+[COMPRESSION] llmlingua: ✅ TinyBERT cargado
+```
+
+**Nota de permisos:** el directorio de caché de HuggingFace debe tener permisos de escritura para el usuario del servicio:
+
+```bash
+chown -R nobody:nogroup /opt/llm-router/node_modules/@huggingface/transformers/
+```
+
+### Logs de compresión
+
+```
+[COMPRESSION] Skipped — 320 tokens < min 500
+[COMPRESSION] history: resumiendo 6 msgs del head...
+[COMPRESSION] history: 12 msgs → 5 msgs (~1800 → ~420 tokens)
+[COMPRESSION] llmlingua: ~2016 → ~980 tokens
+[COMPRESSION] history: nodo no disponible — skipping
+```
+
+### Métricas
+
+| Métrica | Descripción |
+|---|---|
+| `llm_compression_runs_total{mode, result}` | Runs por modo y resultado (`ok`/`fallback`/`skipped`) |
+| `llm_compression_ratio` | Histograma del ratio tokens_out/tokens_in por modo |
+
+
 
 ```bash
 # Chat básico

@@ -5,7 +5,8 @@ import {
   ANTHROPIC_API_KEY, ANTHROPIC_MAX_TOKENS, GOOGLE_API_KEY, REDIS_HOST, REDIS_PORT,
   OLLAMA_KEEP_ALIVE, OLLAMA_NUM_CTX, CLASSIFIER_ENABLED, CLASSIFIER_MODEL, CLASSIFIER_NODE_URL,
   WARMUP_ON_START, CONVERSATION_TTL, CONVERSATION_MAX_TURNS, NODES,
-  estimateCostUsd,
+  estimateCostUsd, COMPRESSION_MODE, COMPRESSION_MIN_TOKENS, COMPRESSION_RATIO,
+  COMPRESSION_NODE_URL, COMPRESSION_MODEL, COMPRESSION_BACKEND,
 } from "../config";
 import { registry } from "../metrics";
 import {
@@ -17,6 +18,7 @@ import { SKILLS, MODEL_MAP, SKILL_CACHE_TTL, loadSkills, watchSkills, extractSki
 import { classifyComplexity, complexityToAlias } from "../classifier";
 import { sessionId, getConversation, saveConversation, deleteConversation } from "../history";
 import { selectCandidates, getNodeLoad } from "../nodes";
+import { compressHistory, warmupLLMLingua } from "../compression";
 import { callOllama, streamOllama, callAnthropic, streamAnthropic, callGoogle, streamGoogle } from "../providers";
 import type { ChatRequest, ChatMessage, ConversationContext, GenerationOptions } from "../types";
 
@@ -119,6 +121,9 @@ async function handleChat(data: ChatRequest, reply: FastifyReply, req: FastifyRe
     messages = injectSkill(messages, skillName);
     console.log(`[SKILL] Inyectando "${skillName}" en "${resolvedModel}"`);
   }
+
+  // Comprimir historial si está activado (antes del cache lookup y del routing)
+  messages = await compressHistory(messages);
 
   if (!stream) {
     const cached = await getCache(messages, resolvedModel);
@@ -409,8 +414,10 @@ export async function startServer(): Promise<void> {
     console.log(`   Auth:       ✅ API key activa`);
     console.log(`   Classifier: ${CLASSIFIER_ENABLED ? `✅ ${CLASSIFIER_MODEL} @ ${CLASSIFIER_NODE_URL}` : "❌ desactivado (solo reglas)"}`);
     console.log(`   History:    TTL ${CONVERSATION_TTL}s, max ${CONVERSATION_MAX_TURNS} turnos (requiere Redis)`);
+    console.log(`   Compression: ${COMPRESSION_MODE === "none" ? "❌ desactivada" : `✅ mode=${COMPRESSION_MODE}, backend=${COMPRESSION_BACKEND}, model=${COMPRESSION_MODEL} @ ${COMPRESSION_NODE_URL}, min=${COMPRESSION_MIN_TOKENS} tokens, ratio=${COMPRESSION_RATIO}`}`);
     if (WARMUP_ON_START) {
       warmupAll().catch((e) => console.error("[WARMUP] Error inesperado:", e));
     }
+    warmupLLMLingua();
   });
 }

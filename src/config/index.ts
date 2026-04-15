@@ -25,6 +25,24 @@ export const CONVERSATION_TTL        = parseInt(process.env.CONVERSATION_TTL ?? 
 export const CONVERSATION_MAX_TURNS  = parseInt(process.env.CONVERSATION_MAX_TURNS ?? "50", 10);
 export const PORT                    = parseInt(process.env.PORT ?? "8000", 10);
 
+// =========================
+// 🗜️ COMPRESIÓN DE HISTORIAL
+// =========================
+
+export type CompressionMode = "none" | "history" | "llmlingua" | "both";
+
+const _compressionMode = process.env.COMPRESSION_MODE ?? "none";
+export const COMPRESSION_MODE: CompressionMode =
+  ["none", "history", "llmlingua", "both"].includes(_compressionMode)
+    ? (_compressionMode as CompressionMode)
+    : "none";
+
+export const COMPRESSION_MIN_TOKENS  = parseInt(process.env.COMPRESSION_MIN_TOKENS ?? "500", 10);
+export const COMPRESSION_RATIO       = parseFloat(process.env.COMPRESSION_RATIO ?? "0.5");
+export const COMPRESSION_NODE_URL    = process.env.COMPRESSION_NODE_URL ?? CLASSIFIER_NODE_URL;
+export const COMPRESSION_MODEL       = process.env.COMPRESSION_MODEL ?? "qwen2.5:3b";
+export const COMPRESSION_BACKEND     = (process.env.COMPRESSION_BACKEND ?? "ollama") === "llamacpp" ? "llamacpp" : "ollama";
+
 if (!ROUTER_API_KEY) {
   console.error("❌ ROUTER_API_KEY no definida — el router no arrancará sin autenticación configurada");
   process.exit(1);
@@ -60,6 +78,7 @@ export const NODES: Record<string, NodeConfig> = {
   mac:     { url: "http://ai-mac.casa.lan",  type: "ollama" },
   claude:  { url: "https://api.anthropic.com",                 type: "anthropic" },
   gemini:  { url: "https://generativelanguage.googleapis.com", type: "google" },
+  "llama-cluster": { url: "http://ai-5070.casa.lan:8080", type: "ollama" },
 };
 
 // =========================
@@ -79,11 +98,14 @@ export const BASE_MODEL_MAP: Record<string, NodeEntry[]> = {
     { nodeName: "mac",     model: "qwen2.5-coder:1.5b" },
   ],
   reasoning: [
-    { nodeName: "gpu5070", model: "deepseek-r1:14b" },
     { nodeName: "gpu4070", model: "deepseek-r1:14b" },
     { nodeName: "mac",     model: "deepseek-r1:14b" },
     { nodeName: "gemini",  model: "gemini-2.5-pro" },
     { nodeName: "claude",  model: "claude-opus-4-6" },
+  ],
+  "reasoning-large": [
+    { nodeName: "llama-cluster", model: "DeepSeek-R1-Distill-Qwen-32B-Q4_K_M.gguf" },
+    { nodeName: "gpu4070",       model: "deepseek-r1:14b" },
   ],
   "deepseek-coder": [
     { nodeName: "gpu4070", model: "deepseek-coder-v2:16b" },

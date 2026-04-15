@@ -84,3 +84,5 @@ export interface SkillEntry {
 }
 
 export type Complexity = "simple" | "medium" | "complex";
+
+export type CompressionMode = "none" | "history" | "llmlingua" | "both";

@@ -56,7 +56,7 @@
   "annotations": {
     "list": []
   },
-  "description": "LLM Router — métricas de tráfico, latencia, caché, nodos y coste",
+  "description": "LLM Router \u2014 m\u00e9tricas de tr\u00e1fico, latencia, cach\u00e9, nodos y coste",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -72,7 +72,7 @@
         "y": 0
       },
       "id": 100,
-      "title": "📊 Resumen",
+      "title": "\ud83d\udcca Resumen",
       "type": "row"
     },
     {
@@ -317,7 +317,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "sum(llm_cost_usd_total)",
+          "expr": "sum(llm_cost_usd_total or vector(0))",
           "legendFormat": "USD total",
           "refId": "A"
         }
@@ -446,7 +446,7 @@
         "y": 5
       },
       "id": 101,
-      "title": "⚡ Tráfico y latencia",
+      "title": "\u26a1 Tr\u00e1fico y latencia",
       "type": "row"
     },
     {
@@ -581,7 +581,7 @@
         "y": 14
       },
       "id": 102,
-      "title": "🖥️ Nodos",
+      "title": "\ud83d\udda5\ufe0f Nodos",
       "type": "row"
     },
     {
@@ -710,7 +710,7 @@
             "type": "prometheus",
             "uid": "${DS_PROMETHEUS}"
           },
-          "expr": "last_over_time(llm_node_load[5m])",
+          "expr": "llm_node_load",
           "legendFormat": "{{node}}",
           "refId": "A",
           "instant": true
@@ -726,7 +726,7 @@
         "y": 23
       },
       "id": 103,
-      "title": "🚀 Rendimiento de modelos",
+      "title": "\ud83d\ude80 Rendimiento de modelos",
       "type": "row"
     },
     {
@@ -818,7 +818,7 @@
           ]
         }
       },
-      "title": "Distribución de peticiones por modelo",
+      "title": "Distribuci\u00f3n de peticiones por modelo",
       "type": "barchart",
       "targets": [
         {
@@ -841,7 +841,7 @@
         "y": 32
       },
       "id": 104,
-      "title": "💰 Coste y caché",
+      "title": "\ud83d\udcb0 Coste y cach\u00e9",
       "type": "row"
     },
     {
@@ -966,7 +966,7 @@
         "y": 41
       },
       "id": 105,
-      "title": "🔍 Detalle por modelo",
+      "title": "\ud83d\udd0d Detalle por modelo",
       "type": "row"
     },
     {
@@ -1150,6 +1150,187 @@
           }
         }
       ]
+    },
+    {
+      "id": 106,
+      "type": "row",
+      "title": "\ud83d\udddc\ufe0f Compresi\u00f3n",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 100
+      },
+      "panels": []
+    },
+    {
+      "id": 60,
+      "type": "stat",
+      "title": "Compresiones ejecutadas",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 101
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "steps": [
+              {
+                "color": "blue",
+                "value": 0
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(llm_compression_runs_total{result=\"ok\"})",
+          "legendFormat": "ok",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 61,
+      "type": "stat",
+      "title": "Compresiones fallidas / skipped",
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 101
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "auto",
+        "textMode": "auto",
+        "colorMode": "background"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "steps": [
+              {
+                "color": "orange",
+                "value": 0
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(llm_compression_runs_total{result=\"fallback\"} or vector(0))",
+          "legendFormat": "fallback",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(llm_compression_runs_total{result=\"skipped\"} or vector(0))",
+          "legendFormat": "skipped",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 62,
+      "type": "timeseries",
+      "title": "Runs de compresi\u00f3n por modo y resultado",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 105
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "targets": [
+        {
+          "expr": "rate(llm_compression_runs_total[5m])",
+          "legendFormat": "{{mode}} / {{result}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 63,
+      "type": "timeseries",
+      "title": "Ratio de compresi\u00f3n alcanzado (tokens_out / tokens_in)",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 105
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "options": {
+        "tooltip": {
+          "mode": "multi"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1
+        }
+      },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.5, rate(llm_compression_ratio_bucket[5m]))",
+          "legendFormat": "p50 {{mode}}",
+          "refId": "A"
+        }
+      ]
     }
   ],
   "refresh": "30s",
@@ -1170,6 +1351,6 @@
   "timepicker": {},
   "timezone": "browser",
   "title": "LLM Router",
-  "uid": "llm-router-jesús",
+  "uid": "llm-router-jes\u00fas",
   "version": 3
 }
