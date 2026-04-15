@@ -18,7 +18,7 @@ import { SKILLS, MODEL_MAP, SKILL_CACHE_TTL, loadSkills, watchSkills, extractSki
 import { classifyComplexity, complexityToAlias } from "../classifier";
 import { sessionId, getConversation, saveConversation, deleteConversation } from "../history";
 import { selectCandidates, getNodeLoad } from "../nodes";
-import { compressHistory } from "../compression";
+import { compressHistory, warmupLLMLingua } from "../compression";
 import { callOllama, streamOllama, callAnthropic, streamAnthropic, callGoogle, streamGoogle } from "../providers";
 import type { ChatRequest, ChatMessage, ConversationContext, GenerationOptions } from "../types";
 
@@ -418,5 +418,6 @@ export async function startServer(): Promise<void> {
     if (WARMUP_ON_START) {
       warmupAll().catch((e) => console.error("[WARMUP] Error inesperado:", e));
     }
+    warmupLLMLingua();
   });
 }

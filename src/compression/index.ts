@@ -43,7 +43,7 @@ function splitHistory(
 }
 
 // =========================
-// 🔍 PROBE DISPONIBILIDAD
+// 🔍 PROBE DISPONIBILIDAD (history mode)
 // =========================
 
 async function isCompressionNodeAvailable(): Promise<boolean> {
@@ -72,7 +72,7 @@ async function isCompressionNodeAvailable(): Promise<boolean> {
 }
 
 // =========================
-// 📝 RESUMEN DEL HEAD
+// 📝 RESUMEN DEL HEAD (history mode)
 // =========================
 
 async function summarizeHead(head: ChatMessage[]): Promise<ChatMessage | null> {
@@ -123,6 +123,82 @@ Summary:`;
 }
 
 // =========================
+// 🤖 LLMLINGUA-2 (singleton)
+// =========================
+
+type PromptCompressor = {
+  compress_prompt: (text: string, opts: { rate: number }) => Promise<string>;
+};
+
+let llmLinguaCompressor: PromptCompressor | null = null;
+let llmLinguaLoading    = false;
+let llmLinguaFailed     = false;
+
+async function getLLMLinguaCompressor(): Promise<PromptCompressor | null> {
+  if (llmLinguaFailed)     return null;
+  if (llmLinguaCompressor) return llmLinguaCompressor;
+  if (llmLinguaLoading)    return null;
+
+  llmLinguaLoading = true;
+  try {
+    console.log("[COMPRESSION] llmlingua: cargando modelo TinyBERT...");
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { LLMLingua2 }  = await import("@atjsh/llmlingua-2" as any);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { Tiktoken }    = await import("js-tiktoken/lite" as any);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const o200k_base      = ((await import("js-tiktoken/ranks/o200k_base" as any)) as any).default;
+
+    const oaiTokenizer = new Tiktoken(o200k_base);
+
+    const { promptCompressor } = await LLMLingua2.WithBERTMultilingual(
+      "atjsh/llmlingua-2-js-tinybert-meetingbank",
+      {
+        transformerJSConfig: { device: "cpu", dtype: "fp32" },
+        oaiTokenizer,
+        modelSpecificOptions: { subfolder: "" },
+      },
+    );
+
+    llmLinguaCompressor = promptCompressor as PromptCompressor;
+    console.log("[COMPRESSION] llmlingua: ✅ modelo cargado");
+    return llmLinguaCompressor;
+  } catch (err) {
+    console.error(`[COMPRESSION] llmlingua: ❌ error cargando modelo: ${err}`);
+    llmLinguaFailed = true;
+    return null;
+  } finally {
+    llmLinguaLoading = false;
+  }
+}
+
+async function compressWithLLMLingua(messages: ChatMessage[]): Promise<ChatMessage[]> {
+  const compressor = await getLLMLinguaCompressor();
+  if (!compressor) {
+    console.warn("[COMPRESSION] llmlingua: compresor no disponible — skipping");
+    return messages;
+  }
+
+  const compressed: ChatMessage[] = [];
+  for (const msg of messages) {
+    if (msg.role === "system" || msg.content.length < 200) {
+      // Mensajes cortos o system — pasar sin comprimir
+      compressed.push(msg);
+      continue;
+    }
+    try {
+      const result = await compressor.compress_prompt(msg.content, { rate: COMPRESSION_RATIO });
+      compressed.push({ ...msg, content: result });
+    } catch (err) {
+      console.warn(`[COMPRESSION] llmlingua: error comprimiendo mensaje: ${err} — usando original`);
+      compressed.push(msg);
+    }
+  }
+  return compressed;
+}
+
+// =========================
 // 🚀 PIPELINE PRINCIPAL
 // =========================
 
@@ -136,14 +212,21 @@ export async function compressHistory(messages: ChatMessage[]): Promise<ChatMess
     return messages;
   }
 
+  let result = messages;
+
   if (mode === "history" || mode === "both") {
-    const before = messages.length;
-    const result = await compressWithHistory(messages);
+    const before = result.length;
+    result = await compressWithHistory(result);
     console.log(`[COMPRESSION] history: ${before} msgs → ${result.length} msgs (~${estimateTokens(messages)} → ~${estimateTokens(result)} tokens)`);
-    return result;
   }
 
-  return messages;
+  if (mode === "llmlingua" || mode === "both") {
+    const beforeTokens = estimateTokens(result);
+    result = await compressWithLLMLingua(result);
+    console.log(`[COMPRESSION] llmlingua: ~${beforeTokens} → ~${estimateTokens(result)} tokens`);
+  }
+
+  return result;
 }
 
 async function compressWithHistory(messages: ChatMessage[]): Promise<ChatMessage[]> {
@@ -171,4 +254,18 @@ async function compressWithHistory(messages: ChatMessage[]): Promise<ChatMessage
   const systemMsgs = tail.filter((m) => m.role === "system");
   const tailChat   = tail.filter((m) => m.role !== "system");
   return [...systemMsgs, summary, ...tailChat];
+}
+
+// =========================
+// 🔥 PRECARGA OPCIONAL
+// =========================
+
+/**
+ * Precarga el modelo LLMLingua al arrancar el servidor si el modo lo requiere.
+ * No bloquea el arranque — carga en background.
+ */
+export function warmupLLMLingua(): void {
+  if (COMPRESSION_MODE === "llmlingua" || COMPRESSION_MODE === "both") {
+    getLLMLinguaCompressor().catch(() => {}); // fire & forget
+  }
 }
