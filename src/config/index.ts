@@ -25,6 +25,23 @@ export const CONVERSATION_TTL        = parseInt(process.env.CONVERSATION_TTL ?? 
 export const CONVERSATION_MAX_TURNS  = parseInt(process.env.CONVERSATION_MAX_TURNS ?? "50", 10);
 export const PORT                    = parseInt(process.env.PORT ?? "8000", 10);
 
+// =========================
+// 🗜️ COMPRESIÓN DE HISTORIAL
+// =========================
+
+export type CompressionMode = "none" | "history" | "llmlingua" | "both";
+
+const _compressionMode = process.env.COMPRESSION_MODE ?? "none";
+export const COMPRESSION_MODE: CompressionMode =
+  ["none", "history", "llmlingua", "both"].includes(_compressionMode)
+    ? (_compressionMode as CompressionMode)
+    : "none";
+
+export const COMPRESSION_MIN_TOKENS  = parseInt(process.env.COMPRESSION_MIN_TOKENS ?? "500", 10);
+export const COMPRESSION_RATIO       = parseFloat(process.env.COMPRESSION_RATIO ?? "0.5");
+export const COMPRESSION_NODE_URL    = process.env.COMPRESSION_NODE_URL ?? CLASSIFIER_NODE_URL;
+export const COMPRESSION_MODEL       = process.env.COMPRESSION_MODEL ?? "qwen2.5:3b";
+
 if (!ROUTER_API_KEY) {
   console.error("❌ ROUTER_API_KEY no definida — el router no arrancará sin autenticación configurada");
   process.exit(1);
