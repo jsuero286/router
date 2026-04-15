@@ -123,74 +123,118 @@ Summary:`;
 }
 
 // =========================
-// 🤖 LLMLINGUA-2 (singleton)
+// 🤖 LLMLINGUA-2 — implementación propia con TinyBERT
 // =========================
 
-type PromptCompressor = {
-  compress_prompt: (text: string, opts: { rate: number }) => Promise<string>;
+type TokenClassifier = {
+  tokenizer: { encode: (text: string) => Promise<{ input_ids: { data: bigint[] } }> };
+  model:     { run: (inputs: Record<string, unknown>) => Promise<{ logits: { data: Float32Array; dims: number[] } }> };
 };
 
-let llmLinguaCompressor: PromptCompressor | null = null;
-let llmLinguaLoading    = false;
-let llmLinguaFailed     = false;
+let bertClassifier: TokenClassifier | null = null;
+let bertLoading    = false;
+let bertFailed     = false;
 
-async function getLLMLinguaCompressor(): Promise<PromptCompressor | null> {
-  if (llmLinguaFailed)     return null;
-  if (llmLinguaCompressor) return llmLinguaCompressor;
-  if (llmLinguaLoading)    return null;
+async function getBertClassifier(): Promise<TokenClassifier | null> {
+  if (bertFailed)     return null;
+  if (bertClassifier) return bertClassifier;
+  if (bertLoading)    return null;
 
-  llmLinguaLoading = true;
+  bertLoading = true;
   try {
-    console.log("[COMPRESSION] llmlingua: cargando modelo TinyBERT...");
-
+    console.log("[COMPRESSION] llmlingua: cargando TinyBERT...");
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const { LLMLingua2 }   = await import("@atjsh/llmlingua-2" as any);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const { getEncoding }  = await import("js-tiktoken" as any);
-    const oaiTokenizer     = getEncoding("o200k_base");
+    const hf = await import("@huggingface/transformers" as any);
 
-    const { promptCompressor } = await LLMLingua2.WithBERTMultilingual(
-      "atjsh/llmlingua-2-js-tinybert-meetingbank",
-      {
-        transformerJSConfig: { device: "cpu", dtype: "fp32" },
-        oaiTokenizer,
-        modelSpecificOptions: { subfolder: "" },
-      },
-    );
+    const MODEL = "atjsh/llmlingua-2-js-tinybert-meetingbank";
+    const tokenizer = await hf.AutoTokenizer.from_pretrained(MODEL);
+    const model     = await hf.AutoModelForTokenClassification.from_pretrained(MODEL, {
+      device: "cpu",
+      dtype:  "fp32",
+    });
 
-    llmLinguaCompressor = promptCompressor as PromptCompressor;
-    console.log("[COMPRESSION] llmlingua: ✅ modelo cargado");
-    return llmLinguaCompressor;
+    bertClassifier = { tokenizer, model };
+    console.log("[COMPRESSION] llmlingua: ✅ TinyBERT cargado");
+    return bertClassifier;
   } catch (err) {
-    console.error(`[COMPRESSION] llmlingua: ❌ error cargando modelo: ${err}`);
-    llmLinguaFailed = true;
+    console.error(`[COMPRESSION] llmlingua: ❌ error cargando TinyBERT: ${err}`);
+    bertFailed = true;
     return null;
   } finally {
-    llmLinguaLoading = false;
+    bertLoading = false;
+  }
+}
+
+/**
+ * Comprime un texto usando TinyBERT para clasificar la relevancia de cada token.
+ * Los tokens con mayor probabilidad de ser "preserve" se mantienen.
+ */
+async function compressText(text: string, ratio: number): Promise<string> {
+  const classifier = await getBertClassifier();
+  if (!classifier) return text;
+
+  try {
+    // Tokenizar — max 512 tokens (límite de BERT)
+    const encoded   = await classifier.tokenizer(text, {
+      truncation:    true,
+      max_length:    512,
+      return_tensors: "pt",
+    });
+
+    // Inferencia
+    const output  = await classifier.model(encoded);
+    const logits  = output.logits; // shape [1, seq_len, 2]
+    const seqLen  = logits.dims[1];
+    const data    = logits.data as Float32Array;
+
+    // Softmax por token → prob de clase 1 ("preserve")
+    const scores: number[] = [];
+    for (let i = 0; i < seqLen; i++) {
+      const offset = i * 2;
+      const l0 = data[offset];
+      const l1 = data[offset + 1];
+      const max = Math.max(l0, l1);
+      const e0  = Math.exp(l0 - max);
+      const e1  = Math.exp(l1 - max);
+      scores.push(e1 / (e0 + e1)); // prob de "preserve"
+    }
+
+    // Cuántos tokens conservar (excluyendo [CLS] y [SEP])
+    const keepCount = Math.max(1, Math.ceil((seqLen - 2) * ratio));
+
+    // Indices de los tokens más relevantes (excluir pos 0=[CLS] y última=[SEP])
+    const ranked = scores
+      .slice(1, seqLen - 1)
+      .map((score, idx) => ({ idx: idx + 1, score }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, keepCount)
+      .map((t) => t.idx)
+      .sort((a, b) => a - b); // restaurar orden original
+
+    // Decodificar tokens seleccionados
+    const inputIds    = encoded.input_ids.data as bigint[];
+    const keptIds     = ranked.map((i) => inputIds[i]);
+    const compressed  = await classifier.tokenizer.decode(keptIds, {
+      skip_special_tokens: true,
+    });
+
+    return compressed.trim() || text;
+  } catch (err) {
+    console.warn(`[COMPRESSION] llmlingua: error en compressText: ${err}`);
+    return text;
   }
 }
 
 async function compressWithLLMLingua(messages: ChatMessage[]): Promise<ChatMessage[]> {
-  const compressor = await getLLMLinguaCompressor();
-  if (!compressor) {
-    console.warn("[COMPRESSION] llmlingua: compresor no disponible — skipping");
-    return messages;
-  }
-
   const compressed: ChatMessage[] = [];
   for (const msg of messages) {
+    // Mensajes cortos o system — pasar sin comprimir
     if (msg.role === "system" || msg.content.length < 200) {
-      // Mensajes cortos o system — pasar sin comprimir
       compressed.push(msg);
       continue;
     }
-    try {
-      const result = await compressor.compress_prompt(msg.content, { rate: COMPRESSION_RATIO });
-      compressed.push({ ...msg, content: result });
-    } catch (err) {
-      console.warn(`[COMPRESSION] llmlingua: error comprimiendo mensaje: ${err} — usando original`);
-      compressed.push(msg);
-    }
+    const result = await compressText(msg.content, COMPRESSION_RATIO);
+    compressed.push({ ...msg, content: result });
   }
   return compressed;
 }
@@ -257,12 +301,8 @@ async function compressWithHistory(messages: ChatMessage[]): Promise<ChatMessage
 // 🔥 PRECARGA OPCIONAL
 // =========================
 
-/**
- * Precarga el modelo LLMLingua al arrancar el servidor si el modo lo requiere.
- * No bloquea el arranque — carga en background.
- */
 export function warmupLLMLingua(): void {
   if (COMPRESSION_MODE === "llmlingua" || COMPRESSION_MODE === "both") {
-    getLLMLinguaCompressor().catch(() => {}); // fire & forget
+    getBertClassifier().catch(() => {});
   }
 }
