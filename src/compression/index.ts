@@ -146,13 +146,8 @@ async function getLLMLinguaCompressor(): Promise<PromptCompressor | null> {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const { LLMLingua2 }   = await import("@atjsh/llmlingua-2" as any);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const tiktoken         = await import("js-tiktoken" as any);
-    const { Tiktoken }     = tiktoken;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const ranksModule      = await import("js-tiktoken/ranks/o200k_base" as any);
-    const o200k_base       = ranksModule.default ?? ranksModule;
-
-    const oaiTokenizer = new Tiktoken(o200k_base);
+    const { getEncoding }  = await import("js-tiktoken" as any);
+    const oaiTokenizer     = getEncoding("o200k_base");
 
     const { promptCompressor } = await LLMLingua2.WithBERTMultilingual(
       "atjsh/llmlingua-2-js-tinybert-meetingbank",
