@@ -41,6 +41,7 @@ export const COMPRESSION_MIN_TOKENS  = parseInt(process.env.COMPRESSION_MIN_TOKE
 export const COMPRESSION_RATIO       = parseFloat(process.env.COMPRESSION_RATIO ?? "0.5");
 export const COMPRESSION_NODE_URL    = process.env.COMPRESSION_NODE_URL ?? CLASSIFIER_NODE_URL;
 export const COMPRESSION_MODEL       = process.env.COMPRESSION_MODEL ?? "qwen2.5:3b";
+export const COMPRESSION_BACKEND     = (process.env.COMPRESSION_BACKEND ?? "ollama") === "llamacpp" ? "llamacpp" : "ollama";
 
 if (!ROUTER_API_KEY) {
   console.error("❌ ROUTER_API_KEY no definida — el router no arrancará sin autenticación configurada");

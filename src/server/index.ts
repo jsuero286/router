@@ -6,7 +6,7 @@ import {
   OLLAMA_KEEP_ALIVE, OLLAMA_NUM_CTX, CLASSIFIER_ENABLED, CLASSIFIER_MODEL, CLASSIFIER_NODE_URL,
   WARMUP_ON_START, CONVERSATION_TTL, CONVERSATION_MAX_TURNS, NODES,
   estimateCostUsd, COMPRESSION_MODE, COMPRESSION_MIN_TOKENS, COMPRESSION_RATIO,
-  COMPRESSION_NODE_URL, COMPRESSION_MODEL,
+  COMPRESSION_NODE_URL, COMPRESSION_MODEL, COMPRESSION_BACKEND,
 } from "../config";
 import { registry } from "../metrics";
 import {
@@ -414,7 +414,7 @@ export async function startServer(): Promise<void> {
     console.log(`   Auth:       ✅ API key activa`);
     console.log(`   Classifier: ${CLASSIFIER_ENABLED ? `✅ ${CLASSIFIER_MODEL} @ ${CLASSIFIER_NODE_URL}` : "❌ desactivado (solo reglas)"}`);
     console.log(`   History:    TTL ${CONVERSATION_TTL}s, max ${CONVERSATION_MAX_TURNS} turnos (requiere Redis)`);
-    console.log(`   Compression: ${COMPRESSION_MODE === "none" ? "❌ desactivada" : `✅ mode=${COMPRESSION_MODE}, model=${COMPRESSION_MODEL} @ ${COMPRESSION_NODE_URL}, min=${COMPRESSION_MIN_TOKENS} tokens, ratio=${COMPRESSION_RATIO}`}`);
+    console.log(`   Compression: ${COMPRESSION_MODE === "none" ? "❌ desactivada" : `✅ mode=${COMPRESSION_MODE}, backend=${COMPRESSION_BACKEND}, model=${COMPRESSION_MODEL} @ ${COMPRESSION_NODE_URL}, min=${COMPRESSION_MIN_TOKENS} tokens, ratio=${COMPRESSION_RATIO}`}`);
     if (WARMUP_ON_START) {
       warmupAll().catch((e) => console.error("[WARMUP] Error inesperado:", e));
     }
