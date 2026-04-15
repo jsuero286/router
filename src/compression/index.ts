@@ -126,9 +126,14 @@ Summary:`;
 // 🤖 LLMLINGUA-2 — implementación propia con TinyBERT
 // =========================
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type HFTokenizer = any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type HFModel = any;
+
 type TokenClassifier = {
-  tokenizer: { encode: (text: string) => Promise<{ input_ids: { data: bigint[] } }> };
-  model:     { run: (inputs: Record<string, unknown>) => Promise<{ logits: { data: Float32Array; dims: number[] } }> };
+  tokenizer: HFTokenizer;
+  model:     HFModel;
 };
 
 let bertClassifier: TokenClassifier | null = null;
