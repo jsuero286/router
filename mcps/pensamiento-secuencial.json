@@ -1,0 +1,7 @@
+{
+  "name": "pensamiento-secuencial",
+  "command": "npx",
+  "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
+  "enabled": false,
+  "models": ["reasoning", "experiment"]
+}

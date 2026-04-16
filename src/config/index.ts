@@ -9,6 +9,7 @@ export const ANTHROPIC_API_KEY       = process.env.ANTHROPIC_API_KEY ?? "";
 export const ANTHROPIC_MAX_TOKENS    = parseInt(process.env.ANTHROPIC_MAX_TOKENS ?? "8096", 10);
 export const GOOGLE_API_KEY          = process.env.GOOGLE_API_KEY ?? "";
 export const SKILLS_DIR              = process.env.SKILLS_DIR ?? path.join(process.cwd(), "skills");
+export const MCPS_DIR                = process.env.MCPS_DIR   ?? path.join(process.cwd(), "mcps");
 export const METRICS_ENABLED         = (process.env.METRICS_ENABLED ?? "true") === "true";
 export const REDIS_HOST              = process.env.REDIS_HOST ?? "127.0.0.1";
 export const REDIS_PORT              = parseInt(process.env.REDIS_PORT ?? "6379", 10);
@@ -122,6 +123,7 @@ export const BASE_MODEL_MAP: Record<string, NodeEntry[]> = {
 
   // Experimentos — para probar modelos de razonamiento sin tocar reasoning
   experiment: [
+    { nodeName: "mac",     model: "deepseek-r1:14b" },
     { nodeName: "gpu4070", model: "deepseek-r1:14b" },
     { nodeName: "claude",  model: "claude-opus-4-6" },
   ],

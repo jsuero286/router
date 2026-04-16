@@ -1,0 +1,7 @@
+{
+  "name": "lector-web",
+  "command": "npx",
+  "args": ["-y", "mcp-server-fetch-typescript"],
+  "enabled": false,
+  "models": ["auto", "reasoning"]
+}

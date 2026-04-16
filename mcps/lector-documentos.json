@@ -1,0 +1,7 @@
+{
+  "name": "lector-documentos",
+  "command": "uvx",
+  "args": ["markitdown-mcp"],
+  "enabled": false,
+  "models": ["auto", "reasoning"]
+}

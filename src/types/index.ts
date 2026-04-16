@@ -86,3 +86,31 @@ export interface SkillEntry {
 export type Complexity = "simple" | "medium" | "complex";
 
 export type CompressionMode = "none" | "history" | "llmlingua" | "both";
+
+// =========================
+// 🔧 MCP
+// =========================
+
+export interface McpDefinition {
+  name:    string;
+  command: string;
+  args:    string[];
+  enabled: boolean;
+  models:  string[];   // aliases donde se inyecta ("auto", "fast", "*" = todos)
+}
+
+export interface McpTool {
+  type:     "function";
+  function: {
+    name:        string;
+    description: string;
+    parameters:  Record<string, unknown>;
+  };
+}
+
+export interface ActiveMcp {
+  definition: McpDefinition;
+  tools:      McpTool[];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  client:     any; // instancia del cliente MCP
+}

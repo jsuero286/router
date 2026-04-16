@@ -1,0 +1,7 @@
+{
+  "name": "buscador-web",
+  "command": "npx",
+  "args": ["-y", "@oevortex/ddg_search"],
+  "enabled": false,
+  "models": ["auto", "fast"]
+}

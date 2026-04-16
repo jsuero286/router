@@ -20,6 +20,7 @@ import { sessionId, getConversation, saveConversation, deleteConversation } from
 import { selectCandidates, getNodeLoad } from "../nodes";
 import { compressHistory, warmupLLMLingua } from "../compression";
 import { getClusterStatus, startCluster, stopCluster } from "../cluster";
+import { loadMcps, watchMcps, getToolsForAlias, MCPS } from "../mcps";
 import { callOllama, streamOllama, callAnthropic, streamAnthropic, callGoogle, streamGoogle } from "../providers";
 import type { ChatRequest, ChatMessage, ConversationContext, GenerationOptions } from "../types";
 
@@ -254,7 +255,7 @@ async function handleChat(data: ChatRequest, reply: FastifyReply, req: FastifyRe
 export const app = Fastify({ logger: true });
 
 app.addHook("onRequest", async (req, reply) => {
-  const publicRoutes = ["/health", "/metrics", "/v1", "/skills", "/cluster"];
+  const publicRoutes = ["/health", "/metrics", "/v1", "/skills", "/mcps", "/cluster"];
   if (publicRoutes.some((r) => req.url === r || req.url.startsWith(r + "/"))) return;
   const auth  = req.headers["authorization"] ?? "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
@@ -288,6 +289,17 @@ app.get("/skills", async (_req, reply) => {
       frontmatter: skill.frontmatter,
       cache_ttl: SKILL_CACHE_TTL[name] ?? CACHE_TTL,
       models: [name, `${name}-fast`, `${name}-reasoning`, `${name}-gemini`, `${name}-claude`],
+    })),
+  });
+});
+
+app.get("/mcps", async (_req, reply) => {
+  return reply.send({
+    mcps: Object.values(MCPS).map((m) => ({
+      name:    m.definition.name,
+      enabled: m.definition.enabled,
+      models:  m.definition.models,
+      tools:   m.tools.map((t) => t.function.name),
     })),
   });
 });
@@ -377,6 +389,7 @@ app.get("/health", async (_req, reply) => {
     nodes: nodeChecks,
     cluster: clusterStatus,
     skills: Object.keys(SKILLS),
+    mcps: Object.keys(MCPS),
     cache: isRedisAvailable() ? "redis" : "memory",
     metrics: METRICS_ENABLED,
   });
@@ -430,6 +443,9 @@ export async function startServer(): Promise<void> {
   loadSkills();
   watchSkills();
 
+  await loadMcps();
+  watchMcps();
+
   const shutdown = async (signal: string) => {
     console.log(`[SERVER] ${signal} recibido — cerrando conexiones...`);
     await app.close();
@@ -449,6 +465,7 @@ export async function startServer(): Promise<void> {
     console.log(`   Cache TTL: ${CACHE_TTL}s (global)`);
     console.log(`   Métricas:  ${METRICS_ENABLED   ? "✅ activas"     : "❌ desactivadas"}`);
     console.log(`   Skills:    ${Object.keys(SKILLS).length > 0 ? Object.keys(SKILLS).join(", ") : "ninguno"}`);
+    console.log(`   MCPs:      ${Object.keys(MCPS).length > 0 ? Object.keys(MCPS).join(", ") : "ninguno"}`);
     console.log(`   Keep-alive: ${OLLAMA_KEEP_ALIVE}${OLLAMA_NUM_CTX > 0 ? ` | ctx: ${OLLAMA_NUM_CTX}` : ""}`);
     console.log(`   Auth:       ✅ API key activa`);
     console.log(`   Classifier: ${CLASSIFIER_ENABLED ? `✅ ${CLASSIFIER_MODEL} @ ${CLASSIFIER_NODE_URL}` : "❌ desactivado (solo reglas)"}`);
