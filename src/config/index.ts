@@ -73,54 +73,47 @@ export function estimateCostUsd(model: string, inputTokens: number, outputTokens
 // =========================
 
 export const NODES: Record<string, NodeConfig> = {
-  gpu5070: { url: "http://ai-5070.casa.lan", type: "ollama" },
-  gpu4070: { url: "http://ai-gpu.casa.lan",  type: "ollama" },
-  mac:     { url: "http://ai-mac.casa.lan",  type: "ollama" },
-  claude:  { url: "https://api.anthropic.com",                 type: "anthropic" },
-  gemini:  { url: "https://generativelanguage.googleapis.com", type: "google" },
+  gpu5060:        { url: "http://ai-5070.casa.lan",       type: "ollama" },
+  gpu4070:        { url: "http://ai-gpu.casa.lan",        type: "ollama" },
+  mac:            { url: "http://ai-mac.casa.lan",        type: "ollama" },
+  claude:         { url: "https://api.anthropic.com",                 type: "anthropic" },
+  gemini:         { url: "https://generativelanguage.googleapis.com", type: "google" },
   "llama-cluster": { url: "http://ai-5070.casa.lan:8080", type: "ollama" },
 };
 
 // =========================
-// 🗺️ MODEL MAP BASE
+// 🗺️ MODEL MAP
 // =========================
 
 export const BASE_MODEL_MAP: Record<string, NodeEntry[]> = {
-  auto: [
-    { nodeName: "gpu5070", model: "qwen2.5-coder:7b" },
-    { nodeName: "gpu4070", model: "deepseek-coder-v2:16b" },
+  // Rápido — respuestas inmediatas, código simple
+  fast: [
+    { nodeName: "gpu5060", model: "qwen2.5-coder:7b" },
     { nodeName: "mac",     model: "qwen2.5-coder:1.5b" },
+  ],
+
+  // General — equilibrio calidad/velocidad
+  auto: [
+    { nodeName: "gpu5060", model: "qwen2.5-coder:7b" },
+    { nodeName: "gpu4070", model: "qwen2.5-coder:14b" },
+    { nodeName: "mac",     model: "deepseek-coder-v2:16b" },
     { nodeName: "gemini",  model: "gemini-2.5-flash" },
     { nodeName: "claude",  model: "claude-sonnet-4-6" },
   ],
-  fast: [
-    { nodeName: "gpu5070", model: "qwen2.5-coder:7b" },
-    { nodeName: "mac",     model: "qwen2.5-coder:1.5b" },
-  ],
+
+  // Razonamiento — arquitectura, debugging, lógica compleja
+  // Requiere cluster activo (llama-cluster-start.sh en gpu5060)
   reasoning: [
-    { nodeName: "gpu4070", model: "deepseek-r1:14b" },
-    { nodeName: "mac",     model: "deepseek-r1:14b" },
-    { nodeName: "gemini",  model: "gemini-2.5-pro" },
-    { nodeName: "claude",  model: "claude-opus-4-6" },
-  ],
-  "reasoning-large": [
     { nodeName: "llama-cluster", model: "DeepSeek-R1-Distill-Qwen-32B-Q4_K_M.gguf" },
     { nodeName: "gpu4070",       model: "deepseek-r1:14b" },
+    { nodeName: "mac",           model: "deepseek-r1:14b" },
+    { nodeName: "gemini",        model: "gemini-2.5-pro" },
+    { nodeName: "claude",        model: "claude-sonnet-4-6" },
   ],
-  "deepseek-coder": [
-    { nodeName: "gpu4070", model: "deepseek-coder-v2:16b" },
-    { nodeName: "gpu5070", model: "deepseek-coder:6.7b-instruct-q4_K_M" },
+
+  // Experimentos — para probar modelos de razonamiento sin tocar reasoning
+  experiment: [
+    { nodeName: "gpu4070", model: "deepseek-r1:14b" },
+    { nodeName: "claude",  model: "claude-opus-4-6" },
   ],
-  "mac-fast":        [{ nodeName: "mac",     model: "qwen2.5-coder:1.5b" }],
-  "mac-reason":      [{ nodeName: "mac",     model: "deepseek-r1:14b" }],
-  "mac-coder":       [{ nodeName: "mac",     model: "deepseek-coder-v2:16b" }],
-  "gpu5070-fast":    [{ nodeName: "gpu5070", model: "qwen2.5-coder:7b" }],
-  "gpu5070-reason":  [{ nodeName: "gpu5070", model: "deepseek-r1:14b" }],
-  "gpu5070-coder":   [{ nodeName: "gpu5070", model: "deepseek-coder:6.7b-instruct-q4_K_M" }],
-  "gpu4070-coder":   [{ nodeName: "gpu4070", model: "deepseek-coder-v2:16b" }],
-  "gpu4070-reason":  [{ nodeName: "gpu4070", model: "deepseek-r1:14b" }],
-  "claude-sonnet":   [{ nodeName: "claude",  model: "claude-sonnet-4-6" }],
-  "claude-opus":     [{ nodeName: "claude",  model: "claude-opus-4-6" }],
-  "gemini-flash":    [{ nodeName: "gemini",  model: "gemini-2.5-flash" }],
-  "gemini-pro":      [{ nodeName: "gemini",  model: "gemini-2.5-pro" }],
 };

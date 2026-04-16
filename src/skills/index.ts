@@ -37,19 +37,20 @@ function buildSkillModelMap(skillName: string, fm: SkillFrontmatter): void {
   const fallbackNode  = fm.fallback_node   ?? "gpu4070";
   const fallbackModel = fm.fallback_model  ?? "deepseek-coder-v2:16b";
   const cloudAlias    = fm.cloud_fallback  ?? "gemini-flash";
-  const cloudEntries  = BASE_MODEL_MAP[cloudAlias] ?? BASE_MODEL_MAP["gemini-flash"] ?? [];
+  const cloudEntries  = BASE_MODEL_MAP[cloudAlias] ?? BASE_MODEL_MAP["auto"] ?? [];
 
+  // Alias principal del skill — usa nodos locales + fallback cloud
   MODEL_MAP[skillName] = [
     { nodeName: primaryNode,  model: primaryModel  },
     { nodeName: fallbackNode, model: fallbackModel },
     ...cloudEntries,
   ];
 
-  MODEL_MAP[`${skillName}-mac`]         = [{ nodeName: "mac",     model: primaryModel }];
-  MODEL_MAP[`${skillName}-4070`]        = [{ nodeName: "gpu4070", model: fallbackModel }];
-  MODEL_MAP[`${skillName}-4070-reason`] = [{ nodeName: "gpu4070", model: "deepseek-r1:14b" }];
-  MODEL_MAP[`${skillName}-gemini`]      = [{ nodeName: "gemini",  model: "gemini-2.5-flash" }];
-  MODEL_MAP[`${skillName}-claude`]      = [{ nodeName: "claude",  model: "claude-sonnet-4-6" }];
+  // Variantes por calidad
+  MODEL_MAP[`${skillName}-fast`]      = BASE_MODEL_MAP["fast"] ?? [];
+  MODEL_MAP[`${skillName}-reasoning`] = BASE_MODEL_MAP["reasoning"] ?? [];
+  MODEL_MAP[`${skillName}-gemini`]    = [{ nodeName: "gemini", model: "gemini-2.5-flash" }];
+  MODEL_MAP[`${skillName}-claude`]    = [{ nodeName: "claude", model: "claude-sonnet-4-6" }];
 }
 
 export function loadSkills(): void {

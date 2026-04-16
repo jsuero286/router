@@ -286,7 +286,7 @@ app.get("/skills", async (_req, reply) => {
       name,
       frontmatter: skill.frontmatter,
       cache_ttl: SKILL_CACHE_TTL[name] ?? CACHE_TTL,
-      models: [name, `${name}-mac`, `${name}-4070`, `${name}-4070-reason`, `${name}-gemini`, `${name}-claude`],
+      models: [name, `${name}-fast`, `${name}-reasoning`, `${name}-gemini`, `${name}-claude`],
     })),
   });
 });
