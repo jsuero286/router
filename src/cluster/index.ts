@@ -10,6 +10,7 @@ const execAsync = promisify(exec);
 const CLUSTER_HOST    = process.env.CLUSTER_HOST    ?? "jesus@192.168.50.79";
 const CLUSTER_SCRIPTS = process.env.CLUSTER_SCRIPTS ?? "/home/jesus/docker";
 const CLUSTER_URL     = process.env.CLUSTER_URL     ?? "http://192.168.50.79:8080";
+const CLUSTER_SSH_KEY = process.env.CLUSTER_SSH_KEY ?? "/var/lib/nobody/.ssh/id_ed25519";
 
 export type ClusterStatus = "online" | "offline" | "unknown";
 
@@ -25,7 +26,7 @@ export async function getClusterStatus(): Promise<ClusterStatus> {
 }
 
 async function runRemoteScript(script: string): Promise<{ ok: boolean; output: string }> {
-  const cmd = `ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 ${CLUSTER_HOST} "bash ${CLUSTER_SCRIPTS}/${script}"`;
+  const cmd = `ssh -o StrictHostKeyChecking=no -o ConnectTimeout=5 -o UserKnownHostsFile=/dev/null -i ${CLUSTER_SSH_KEY} ${CLUSTER_HOST} "bash ${CLUSTER_SCRIPTS}/${script}"`;
   try {
     const { stdout, stderr } = await execAsync(cmd, { timeout: 120_000 });
     return { ok: true, output: (stdout + stderr).trim() };

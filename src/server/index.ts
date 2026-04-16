@@ -254,8 +254,8 @@ async function handleChat(data: ChatRequest, reply: FastifyReply, req: FastifyRe
 export const app = Fastify({ logger: true });
 
 app.addHook("onRequest", async (req, reply) => {
-  const publicRoutes = ["/health", "/metrics", "/v1", "/skills", "/cluster/status", "/cluster/start", "/cluster/stop"];
-  if (publicRoutes.includes(req.url)) return;
+  const publicRoutes = ["/health", "/metrics", "/v1", "/skills", "/cluster"];
+  if (publicRoutes.some((r) => req.url === r || req.url.startsWith(r + "/"))) return;
   const auth  = req.headers["authorization"] ?? "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
   const valid =
