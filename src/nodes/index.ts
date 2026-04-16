@@ -8,7 +8,18 @@ import type { NodeConfig, OllamaPsResponse, SelectedNode } from "../types";
 // =========================
 
 export async function getNodeLoad(nodeConfig: NodeConfig): Promise<number> {
-  if (nodeConfig.type !== "ollama") return 0;
+  if (nodeConfig.type === "anthropic" || nodeConfig.type === "google") return 0;
+  if (nodeConfig.type === "llamacpp") {
+    try {
+      const res = await fetch(`${nodeConfig.url}/health`, {
+        signal: AbortSignal.timeout(500),
+      });
+      return res.ok ? 0 : 999;
+    } catch {
+      return 999;
+    }
+  }
+  // ollama
   try {
     const res = await fetch(`${nodeConfig.url}/api/ps`, {
       signal: AbortSignal.timeout(500),
@@ -25,14 +36,20 @@ export async function selectCandidates(modelAlias: string): Promise<SelectedNode
   const entries = MODEL_MAP[modelAlias];
   if (!entries || entries.length === 0) return [];
 
-  const ollamaEntries = entries.filter((e) => NODES[e.nodeName]?.type === "ollama");
-  const cloudEntries  = entries.filter((e) => NODES[e.nodeName]?.type !== "ollama");
+  const localEntries = entries.filter((e) => {
+    const t = NODES[e.nodeName]?.type;
+    return t === "ollama" || t === "llamacpp";
+  });
+  const cloudEntries = entries.filter((e) => {
+    const t = NODES[e.nodeName]?.type;
+    return t === "anthropic" || t === "google";
+  });
 
   const candidates: SelectedNode[] = [];
 
-  if (ollamaEntries.length > 0) {
+  if (localEntries.length > 0) {
     const loadResults = await Promise.all(
-      ollamaEntries.map(async (entry) => {
+      localEntries.map(async (entry) => {
         const config = NODES[entry.nodeName];
         if (!config) return { entry, config: null, load: 999 };
         const load = await getNodeLoad(config);
@@ -48,7 +65,7 @@ export async function selectCandidates(modelAlias: string): Promise<SelectedNode
       .sort((a, b) => a.load - b.load);
 
     if (available.length === 0) {
-      console.warn("[ROUTING] Todos los nodos Ollama offline, escalando a cloud");
+      console.warn("[ROUTING] Todos los nodos locales offline, escalando a cloud");
     }
 
     for (const { entry, config } of available) {

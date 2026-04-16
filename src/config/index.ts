@@ -88,7 +88,7 @@ export const NODES: Record<string, NodeConfig> = {
   mac:            { url: "http://ai-mac.casa.lan",        type: "ollama" },
   claude:         { url: "https://api.anthropic.com",                 type: "anthropic" },
   gemini:         { url: "https://generativelanguage.googleapis.com", type: "google" },
-  "llama-cluster": { url: "http://ai-5070.casa.lan:8080", type: "ollama" },
+  "llama-cluster": { url: "http://ai-5070.casa.lan:8080", type: "llamacpp" },
 };
 
 // =========================

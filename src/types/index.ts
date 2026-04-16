@@ -46,7 +46,7 @@ export interface NodeEntry {
   model: string;
 }
 
-export type NodeType = "ollama" | "anthropic" | "google";
+export type NodeType = "ollama" | "anthropic" | "google" | "llamacpp";
 
 export interface NodeConfig {
   url: string;

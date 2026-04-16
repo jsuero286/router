@@ -21,7 +21,7 @@ import { selectCandidates, getNodeLoad } from "../nodes";
 import { compressHistory, warmupLLMLingua } from "../compression";
 import { getClusterStatus, startCluster, stopCluster } from "../cluster";
 import { loadMcps, watchMcps, getToolsForAlias, MCPS } from "../mcps";
-import { callOllama, streamOllama, callAnthropic, streamAnthropic, callGoogle, streamGoogle } from "../providers";
+import { callOllama, streamOllama, callAnthropic, streamAnthropic, callGoogle, streamGoogle, callLlamaCpp, streamLlamaCpp } from "../providers";
 import type { ChatRequest, ChatMessage, ConversationContext, GenerationOptions } from "../types";
 
 // =========================
@@ -144,6 +144,14 @@ async function handleChat(data: ChatRequest, reply: FastifyReply, req: FastifyRe
     async function probeNode(selected: (typeof candidates)[0]): Promise<boolean> {
       if (selected.config.type === "anthropic") return !!ANTHROPIC_API_KEY;
       if (selected.config.type === "google")    return !!GOOGLE_API_KEY;
+      if (selected.config.type === "llamacpp") {
+        try {
+          const res = await fetch(`${selected.config.url}/health`, {
+            signal: AbortSignal.timeout(2000),
+          });
+          return res.ok;
+        } catch { return false; }
+      }
       try {
         const res = await fetch(`${selected.config.url}/api/ps`, {
           signal: AbortSignal.timeout(2000),
@@ -180,6 +188,7 @@ async function handleChat(data: ChatRequest, reply: FastifyReply, req: FastifyRe
     const generator =
       streamSelected.config.type === "anthropic" ? streamAnthropic(streamSelected.model, messages, opts) :
       streamSelected.config.type === "google"    ? streamGoogle(streamSelected.model, messages, opts) :
+      streamSelected.config.type === "llamacpp"  ? streamLlamaCpp(streamSelected.config.url, messages, opts) :
                                                    streamOllama(streamSelected.config.url, streamSelected.model, messages, opts);
     for await (const chunk of generator) reply.raw.write(chunk);
     reply.raw.end();
@@ -195,6 +204,7 @@ async function handleChat(data: ChatRequest, reply: FastifyReply, req: FastifyRe
       result =
         selected.config.type === "anthropic" ? await callAnthropic(selected.model, messages, opts) :
         selected.config.type === "google"    ? await callGoogle(selected.model, messages, opts) :
+        selected.config.type === "llamacpp"  ? await callLlamaCpp(selected.config.url, messages, opts) :
                                                await callOllama(selected.config.url, selected.model, messages, opts);
     } catch (err) {
       console.warn(`[RETRY] ${selected.nodeName} lanzó excepción: ${err} — probando siguiente`);
