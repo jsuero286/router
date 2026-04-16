@@ -19,6 +19,7 @@ import { classifyComplexity, complexityToAlias } from "../classifier";
 import { sessionId, getConversation, saveConversation, deleteConversation } from "../history";
 import { selectCandidates, getNodeLoad } from "../nodes";
 import { compressHistory, warmupLLMLingua } from "../compression";
+import { getClusterStatus, startCluster, stopCluster } from "../cluster";
 import { callOllama, streamOllama, callAnthropic, streamAnthropic, callGoogle, streamGoogle } from "../providers";
 import type { ChatRequest, ChatMessage, ConversationContext, GenerationOptions } from "../types";
 
@@ -253,7 +254,7 @@ async function handleChat(data: ChatRequest, reply: FastifyReply, req: FastifyRe
 export const app = Fastify({ logger: true });
 
 app.addHook("onRequest", async (req, reply) => {
-  const publicRoutes = ["/health", "/metrics", "/v1", "/skills"];
+  const publicRoutes = ["/health", "/metrics", "/v1", "/skills", "/cluster/status", "/cluster/start", "/cluster/stop"];
   if (publicRoutes.includes(req.url)) return;
   const auth  = req.headers["authorization"] ?? "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
@@ -326,6 +327,42 @@ app.get("/v1/usage", async (_req, reply) => {
   });
 });
 
+// =========================
+// 🖥️ CLUSTER ENDPOINTS
+// =========================
+
+app.get("/cluster/status", async (_req, reply) => {
+  const status = await getClusterStatus();
+  return reply.send({ status });
+});
+
+app.post("/cluster/start", async (_req, reply) => {
+  const status = await getClusterStatus();
+  if (status === "online") {
+    return reply.send({ ok: true, message: "Cluster ya está activo", status });
+  }
+  const result = await startCluster();
+  const newStatus = result.ok ? await getClusterStatus() : "unknown";
+  return reply.code(result.ok ? 200 : 500).send({
+    ok:     result.ok,
+    status: newStatus,
+    output: result.output,
+  });
+});
+
+app.post("/cluster/stop", async (_req, reply) => {
+  const status = await getClusterStatus();
+  if (status === "offline") {
+    return reply.send({ ok: true, message: "Cluster ya está parado", status });
+  }
+  const result = await stopCluster();
+  return reply.code(result.ok ? 200 : 500).send({
+    ok:     result.ok,
+    status: result.ok ? "offline" : "unknown",
+    output: result.output,
+  });
+});
+
 app.get("/health", async (_req, reply) => {
   const nodeChecks = await Promise.all(
     Object.entries(NODES).map(async ([name, config]) => ({
@@ -334,9 +371,11 @@ app.get("/health", async (_req, reply) => {
       online: config.type !== "ollama" ? true : (await getNodeLoad(config)) < 999,
     }))
   );
+  const clusterStatus = await getClusterStatus();
   return reply.send({
     status: "ok",
     nodes: nodeChecks,
+    cluster: clusterStatus,
     skills: Object.keys(SKILLS),
     cache: isRedisAvailable() ? "redis" : "memory",
     metrics: METRICS_ENABLED,

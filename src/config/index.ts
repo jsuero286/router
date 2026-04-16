@@ -43,6 +43,14 @@ export const COMPRESSION_NODE_URL    = process.env.COMPRESSION_NODE_URL ?? CLASS
 export const COMPRESSION_MODEL       = process.env.COMPRESSION_MODEL ?? "qwen2.5:3b";
 export const COMPRESSION_BACKEND     = (process.env.COMPRESSION_BACKEND ?? "ollama") === "llamacpp" ? "llamacpp" : "ollama";
 
+// =========================
+// 🖥️ CLUSTER
+// =========================
+
+export const CLUSTER_HOST    = process.env.CLUSTER_HOST    ?? "jesus@192.168.50.79";
+export const CLUSTER_SCRIPTS = process.env.CLUSTER_SCRIPTS ?? "/home/jesus/docker";
+export const CLUSTER_URL     = process.env.CLUSTER_URL     ?? "http://192.168.50.79:8080";
+
 if (!ROUTER_API_KEY) {
   console.error("❌ ROUTER_API_KEY no definida — el router no arrancará sin autenticación configurada");
   process.exit(1);
