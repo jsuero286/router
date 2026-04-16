@@ -20,7 +20,7 @@ import { sessionId, getConversation, saveConversation, deleteConversation } from
 import { selectCandidates, getNodeLoad } from "../nodes";
 import { compressHistory, warmupLLMLingua } from "../compression";
 import { getClusterStatus, startCluster, stopCluster } from "../cluster";
-import { loadMcps, watchMcps, getToolsForAlias, MCPS } from "../mcps";
+import { loadMcps, watchMcps, getToolsForAlias, runAgenticLoop, MCPS } from "../mcps";
 import { callOllama, streamOllama, callAnthropic, streamAnthropic, callGoogle, streamGoogle, callLlamaCpp, streamLlamaCpp } from "../providers";
 import type { ChatRequest, ChatMessage, ConversationContext, GenerationOptions } from "../types";
 
@@ -132,6 +132,9 @@ async function handleChat(data: ChatRequest, reply: FastifyReply, req: FastifyRe
     if (cached) return reply.send(openaiResponse(resolvedModel, cached));
   }
 
+  // Tools MCP para este alias
+  const mcpTools = getToolsForAlias(resolvedModel);
+
   const candidates = await selectCandidates(resolvedModel);
   if (candidates.length === 0) {
     ERROR_COUNT_inc();
@@ -199,13 +202,48 @@ async function handleChat(data: ChatRequest, reply: FastifyReply, req: FastifyRe
   for (const selected of candidates) {
     console.log(`[ROUTER] ${model} → ${selected.model} @ ${selected.nodeName} (${selected.config.type})`);
     const start = Date.now();
+
+    // Solo cloud soporta tools por ahora
+    const supportsTools = selected.config.type === "anthropic" || selected.config.type === "google";
+    const activeTools   = supportsTools ? mcpTools : [];
+
+    if (activeTools.length > 0) {
+      console.log(`[MCPS] Inyectando ${activeTools.length} tool(s) en ${selected.nodeName}`);
+    }
+
     let result: import("../types").OllamaResponse;
     try {
-      result =
-        selected.config.type === "anthropic" ? await callAnthropic(selected.model, messages, opts) :
-        selected.config.type === "google"    ? await callGoogle(selected.model, messages, opts) :
-        selected.config.type === "llamacpp"  ? await callLlamaCpp(selected.config.url, messages, opts) :
-                                               await callOllama(selected.config.url, selected.model, messages, opts);
+      if (activeTools.length > 0) {
+        // Agentic loop — el modelo puede llamar tools múltiples veces
+        const loopResult = await runAgenticLoop(
+          async (msgs, tools) => {
+            const r = selected.config.type === "anthropic"
+              ? await callAnthropic(selected.model, msgs, opts, tools)
+              : await callGoogle(selected.model, msgs, opts, tools);
+            return {
+              content:      r.message?.content ?? "",
+              // eslint-disable-next-line @typescript-eslint/no-explicit-any
+              toolCalls:    (r as any).toolCalls,
+              inputTokens:  r.prompt_eval_count ?? -1,
+              outputTokens: r.eval_count ?? -1,
+            };
+          },
+          messages,
+          activeTools,
+        );
+        result = {
+          message:           { content: loopResult.content },
+          done:              true,
+          prompt_eval_count: loopResult.inputTokens,
+          eval_count:        loopResult.outputTokens,
+        };
+      } else {
+        result =
+          selected.config.type === "anthropic" ? await callAnthropic(selected.model, messages, opts) :
+          selected.config.type === "google"    ? await callGoogle(selected.model, messages, opts) :
+          selected.config.type === "llamacpp"  ? await callLlamaCpp(selected.config.url, messages, opts) :
+                                                 await callOllama(selected.config.url, selected.model, messages, opts);
+      }
     } catch (err) {
       console.warn(`[RETRY] ${selected.nodeName} lanzó excepción: ${err} — probando siguiente`);
       continue;

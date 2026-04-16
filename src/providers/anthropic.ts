@@ -1,19 +1,41 @@
 import { ANTHROPIC_API_KEY, ANTHROPIC_MAX_TOKENS } from "../config";
 import { TOKENS_PER_SEC_observe } from "../metrics";
-import type { ChatMessage, OllamaResponse, GenerationOptions } from "../types";
+import type { ChatMessage, OllamaResponse, GenerationOptions, McpTool } from "../types";
 
 // =========================
 // 🤖 ANTHROPIC — non-stream & stream
 // =========================
 
-export async function callAnthropic(model: string, messages: ChatMessage[], opts: GenerationOptions = {}): Promise<OllamaResponse> {
+export interface AnthropicToolCall {
+  id:    string;
+  name:  string;
+  input: Record<string, unknown>;
+}
+
+export async function callAnthropic(
+  model: string,
+  messages: ChatMessage[],
+  opts: GenerationOptions = {},
+  tools: McpTool[] = [],
+): Promise<OllamaResponse & { toolCalls?: AnthropicToolCall[] }> {
   if (!ANTHROPIC_API_KEY) return { error: "ANTHROPIC_API_KEY not set" };
   const systemMsg    = messages.find((m) => m.role === "system")?.content;
   const userMessages = messages.filter((m) => m.role !== "system");
-  const body: Record<string, unknown> = { model, max_tokens: opts.max_tokens ?? ANTHROPIC_MAX_TOKENS, messages: userMessages };
+  const body: Record<string, unknown> = {
+    model,
+    max_tokens: opts.max_tokens ?? ANTHROPIC_MAX_TOKENS,
+    messages: userMessages,
+  };
   if (opts.temperature != null) body.temperature = opts.temperature;
   if (opts.top_p != null)        body.top_p       = opts.top_p;
   if (systemMsg) body.system = systemMsg;
+  if (tools.length > 0) {
+    body.tools = tools.map((t) => ({
+      name:         t.function.name,
+      description:  t.function.description,
+      input_schema: t.function.parameters,
+    }));
+  }
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -25,10 +47,26 @@ export async function callAnthropic(model: string, messages: ChatMessage[], opts
     signal: AbortSignal.timeout(120_000),
   });
   if (!res.ok) return { error: `Anthropic HTTP ${res.status}: ${await res.text()}` };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const data = (await res.json()) as any;
+
+  // Extraer tool calls si los hay
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const toolUseBlocks = (data.content ?? []).filter((b: any) => b.type === "tool_use");
+  if (toolUseBlocks.length > 0) {
+    return {
+      message:           { content: "" },
+      done:              true,
+      prompt_eval_count: data.usage?.input_tokens  ?? -1,
+      eval_count:        data.usage?.output_tokens ?? -1,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      toolCalls: toolUseBlocks.map((b: any) => ({ id: b.id, name: b.name, input: b.input })),
+    };
+  }
+
   return {
-    message: { content: data.content?.[0]?.text ?? "" },
-    done: true,
+    message:           { content: data.content?.[0]?.text ?? "" },
+    done:              true,
     prompt_eval_count: data.usage?.input_tokens  ?? -1,
     eval_count:        data.usage?.output_tokens ?? -1,
   };

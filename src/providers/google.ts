@@ -1,12 +1,23 @@
 import { GOOGLE_API_KEY } from "../config";
 import { TOKENS_PER_SEC_observe } from "../metrics";
-import type { ChatMessage, OllamaResponse, GenerationOptions } from "../types";
+import type { ChatMessage, OllamaResponse, GenerationOptions, McpTool } from "../types";
 
 // =========================
 // 🔵 GOOGLE GEMINI — non-stream & stream
 // =========================
 
-export async function callGoogle(model: string, messages: ChatMessage[], opts: GenerationOptions = {}): Promise<OllamaResponse> {
+export interface GoogleToolCall {
+  id:   string;
+  name: string;
+  args: Record<string, unknown>;
+}
+
+export async function callGoogle(
+  model: string,
+  messages: ChatMessage[],
+  opts: GenerationOptions = {},
+  tools: McpTool[] = [],
+): Promise<OllamaResponse & { toolCalls?: GoogleToolCall[] }> {
   if (!GOOGLE_API_KEY) return { error: "GOOGLE_API_KEY not set" };
   const systemMsg    = messages.find((m) => m.role === "system")?.content;
   const userMessages = messages.filter((m) => m.role !== "system");
@@ -22,6 +33,15 @@ export async function callGoogle(model: string, messages: ChatMessage[], opts: G
     if (opts.top_p != null)        gc.topP        = opts.top_p;
     body.generationConfig = gc;
   }
+  if (tools.length > 0) {
+    body.tools = [{
+      functionDeclarations: tools.map((t) => ({
+        name:        t.function.name,
+        description: t.function.description,
+        parameters:  t.function.parameters,
+      })),
+    }];
+  }
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GOOGLE_API_KEY}`;
   const res = await fetch(url, {
     method: "POST",
@@ -30,10 +50,31 @@ export async function callGoogle(model: string, messages: ChatMessage[], opts: G
     signal: AbortSignal.timeout(120_000),
   });
   if (!res.ok) return { error: `Google HTTP ${res.status}: ${await res.text()}` };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const data = (await res.json()) as any;
+
+  // Extraer tool calls si los hay
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const parts = data.candidates?.[0]?.content?.parts ?? [];
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const fnCalls = parts.filter((p: any) => p.functionCall);
+  if (fnCalls.length > 0) {
+    return {
+      message:           { content: "" },
+      done:              true,
+      prompt_eval_count: data.usageMetadata?.promptTokenCount     ?? -1,
+      eval_count:        data.usageMetadata?.candidatesTokenCount ?? -1,
+      toolCalls: fnCalls.map((p: any, i: number) => ({
+        id:   `google-tool-${i}`,
+        name: p.functionCall.name,
+        args: p.functionCall.args ?? {},
+      })),
+    };
+  }
+
   return {
-    message: { content: data.candidates?.[0]?.content?.parts?.[0]?.text ?? "" },
-    done: true,
+    message:           { content: parts.find((p: any) => p.text)?.text ?? "" },
+    done:              true,
     prompt_eval_count: data.usageMetadata?.promptTokenCount     ?? -1,
     eval_count:        data.usageMetadata?.candidatesTokenCount ?? -1,
   };
