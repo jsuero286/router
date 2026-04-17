@@ -17,51 +17,49 @@ Cliente (Aider / Open WebUI / curl)
 
 ## Modelos disponibles
 
-### Automáticos (el router elige el nodo)
+Los modelos se definen en ficheros `.json` dentro de la carpeta `models/` y se cargan en caliente sin reiniciar el router. Cada fichero define un alias con su lista de nodos ordenada por prioridad de routing.
 
-| Alias | Nodos / Modelos (por prioridad) |
+### Aliases principales
+
+| Alias | Descripción |
 |---|---|
-| `auto` | gpu5070 → qwen2.5-coder:7b, gpu4070 → deepseek-coder-v2:16b, mac → qwen2.5-coder:1.5b, gemini-2.5-flash, claude-sonnet-4-5 |
-| `fast` | gpu5070 → qwen2.5-coder:7b, mac → qwen2.5-coder:1.5b |
-| `reasoning` | gpu4070 → deepseek-r1:14b, mac → deepseek-r1:14b, gemini-2.5-pro, claude-opus-4-5 |
-| `deepseek-coder` | gpu4070 → deepseek-coder-v2:16b, gpu5070 → deepseek-coder:6.7b |
+| `auto` | Uso general — equilibrio calidad/velocidad |
+| `fast` | Respuestas rápidas y código simple |
+| `reasoning` | Razonamiento complejo — usa el cluster 32B si está activo |
+| `experiment` | Experimentos con modelos de razonamiento |
 
-### Nodos específicos (tú eliges)
+### Skills
 
-| Alias | Nodo | Modelo |
+Cada fichero `.md` en la carpeta `skills/` genera automáticamente un alias con el nombre del skill. Los skills incluidos por defecto son `angular-expert`, `spring-expert`, `debug`, `refactor` y `web-design`.
+
+### Añadir un modelo nuevo
+
+Crea un fichero `.json` en `models/`:
+
+```json
+{
+  "name": "mi-modelo",
+  "description": "Descripción del alias",
+  "nodes": [
+    { "nodeName": "gpu5060", "model": "qwen2.5-coder:7b" },
+    { "nodeName": "gpu4070", "model": "deepseek-coder-v2:16b" },
+    { "nodeName": "gemini",  "model": "gemini-2.5-flash" }
+  ]
+}
+```
+
+El orden del array determina la prioridad — el router intenta el primero y va bajando si el nodo está offline u ocupado. El hot-reload lo detecta automáticamente en menos de 5 segundos.
+
+### Nodos disponibles
+
+| Nombre | URL | Tipo |
 |---|---|---|
-| `mac-fast` | mac | qwen2.5-coder:1.5b |
-| `mac-reason` | mac | deepseek-r1:14b |
-| `mac-coder` | mac | deepseek-coder-v2:16b |
-| `gpu5070-fast` | gpu5070 | qwen2.5-coder:7b |
-| `gpu5070-coder` | gpu5070 | deepseek-coder:6.7b |
-| `gpu4070-coder` | gpu4070 | deepseek-coder-v2:16b |
-| `gpu4070-reason` | gpu4070 | deepseek-r1:14b |
-
-### Cloud directo
-
-| Alias | Proveedor | Modelo |
-|---|---|---|
-| `claude-sonnet` | Anthropic | claude-sonnet-4-5 |
-| `claude-opus` | Anthropic | claude-opus-4-5 |
-| `gemini-flash` | Google | gemini-2.5-flash |
-| `gemini-pro` | Google | gemini-2.5-pro |
-
-### Skills (se generan automáticamente desde `/skills/*.md`)
-
-Cada fichero `.md` en la carpeta `skills/` genera 5 modelos automáticamente:
-
-| Alias | Nodo |
-|---|---|
-| `{skill}-mac` | mac → deepseek-coder-v2:16b |
-| `{skill}-4070` | gpu4070 → deepseek-coder-v2:16b |
-| `{skill}-4070-reason` | gpu4070 → deepseek-r1:14b |
-| `{skill}-gemini` | gemini → gemini-2.5-flash |
-| `{skill}-claude` | claude → claude-sonnet-4-5 |
-
-Skills incluidos por defecto: `angular-expert`, `spring-expert`, `debug`, `refactor`, `web-design`.
-
-Para añadir un skill nuevo basta con crear un `.md` en `skills/` y reiniciar el servicio.
+| `gpu5060` | `http://ai-5070.casa.lan` | Ollama |
+| `gpu4070` | `http://ai-gpu.casa.lan` | Ollama |
+| `mac` | `http://ai-mac.casa.lan` | Ollama |
+| `llama-cluster` | `http://ai-5070.casa.lan:8080` | llama.cpp (cluster 32B) |
+| `claude` | `https://api.anthropic.com` | Anthropic |
+| `gemini` | `https://generativelanguage.googleapis.com` | Google |
 
 ## Requisitos
 
@@ -87,7 +85,7 @@ npm run dev
 
 ## Configuración
 
-Crea un fichero `.env` en la raíz del proyecto:
+El router se configura mediante variables de entorno en el unit de systemd (o en un fichero `.env`):
 
 ```bash
 # Puerto del servidor
@@ -100,38 +98,46 @@ ROUTER_API_KEY=tu-token-aqui
 # API Keys de proveedores cloud
 ANTHROPIC_API_KEY=sk-ant-...
 GOOGLE_API_KEY=AIza...
+ANTHROPIC_MAX_TOKENS=16384
 
 # Métricas Prometheus (true/false)
 METRICS_ENABLED=true
 
-# Carpeta de skills (por defecto: ./skills)
-SKILLS_DIR=/opt/llm-router/skills
+# Carpetas de recursos (hot-reload activo en todas)
+MODELS_DIR=/opt/llm-router/models   # aliases de modelos (.json)
+SKILLS_DIR=/opt/llm-router/skills   # skills de sistema (.md)
+MCPS_DIR=/opt/llm-router/mcps       # MCPs (.json)
 
-# Optimización de velocidad Ollama
-OLLAMA_KEEP_ALIVE=1h     # tiempo que el modelo permanece en VRAM tras la última petición (-1 = siempre)
-OLLAMA_NUM_CTX=0         # tamaño de contexto (0 = usa el default del modelo)
-WARMUP_ON_START=true     # precalentar modelos en VRAM al arrancar el router
+# Optimización Ollama
+OLLAMA_KEEP_ALIVE=1h     # tiempo que el modelo permanece en VRAM (-1 = siempre)
+OLLAMA_NUM_CTX=0         # tamaño de contexto (0 = default del modelo)
+WARMUP_ON_START=true     # precalentar modelos al arrancar
 
-# Clasificador de complejidad (solo afecta al alias "auto")
+# Clasificador de complejidad (para el alias "auto")
 CLASSIFIER_ENABLED=true
-CLASSIFIER_NODE_URL=http://ai-mac.casa.lan  # nodo donde corre el clasificador
-CLASSIFIER_MODEL=qwen2.5:0.5b              # modelo pequeño y rápido
+CLASSIFIER_NODE_URL=http://ai-mac.casa.lan
+CLASSIFIER_MODEL=qwen2.5:0.5b
 
 # Historial de conversación (requiere Redis)
-CONVERSATION_TTL=3600        # segundos hasta que expira una sesión inactiva
-CONVERSATION_MAX_TURNS=50    # máximo de turnos guardados por sesión
-```
+REDIS_HOST=192.168.50.82
+REDIS_PORT=6379
+REDIS_PASSWORD=tu-password
+CONVERSATION_TTL=3600        # segundos hasta expirar sesión inactiva
+CONVERSATION_MAX_TURNS=50    # máximo de turnos por sesión
 
-Los nodos y modelos se configuran directamente en `src/router.ts`:
+# Compresión de historial
+COMPRESSION_MODE=llmlingua   # none | history | llmlingua | both
+COMPRESSION_MIN_TOKENS=500
+COMPRESSION_RATIO=0.5
+COMPRESSION_BACKEND=llamacpp # llamacpp | ollama
+COMPRESSION_NODE_URL=http://peque.casa.lan
+COMPRESSION_MODEL=qwen2.5:3b # solo para backend ollama
 
-```typescript
-const NODES: Record<string, NodeConfig> = {
-  gpu5070: { url: "http://ai-5070.casa.lan", type: "ollama" },
-  gpu4070: { url: "http://ai-gpu.casa.lan",  type: "ollama" },
-  mac:     { url: "http://ai-mac.casa.lan",  type: "ollama" },
-  claude:  { url: "https://api.anthropic.com",                 type: "anthropic" },
-  gemini:  { url: "https://generativelanguage.googleapis.com", type: "google" },
-};
+# Cluster llama.cpp distribuido
+CLUSTER_HOST=jesus@192.168.50.79
+CLUSTER_SCRIPTS=/home/jesus/docker
+CLUSTER_URL=http://192.168.50.79:8080
+CLUSTER_SSH_KEY=/var/lib/nobody/.ssh/id_ed25519
 ```
 
 ## Autenticación
@@ -260,13 +266,18 @@ WantedBy=multi-user.target
 | Método | Ruta | Auth | Descripción |
 |---|---|---|---|
 | POST | `/v1/chat/completions` | ✅ | Chat compatible OpenAI |
-| GET | `/v1/models` | ✅ | Lista de todos los modelos disponibles |
-| GET | `/v1/conversation` | ✅ | Ver historial y contexto de la sesión |
-| DELETE | `/v1/conversation` | ✅ | Borrar sesión y empezar de cero |
+| GET | `/v1/models` | ✅ | Lista de modelos disponibles |
+| GET | `/v1/conversation` | ✅ | Ver historial de la sesión |
+| DELETE | `/v1/conversation` | ✅ | Borrar sesión |
+| GET | `/v1/usage` | ✅ | Estadísticas de uso y coste |
 | GET | `/v1` | ❌ | Health check básico |
-| GET | `/health` | ❌ | Estado de nodos, skills y caché |
-| GET | `/skills` | ❌ | Lista de skills cargados y sus modelos |
-| GET | `/metrics` | ❌ | Métricas Prometheus (si `METRICS_ENABLED=true`) |
+| GET | `/health` | ❌ | Estado de nodos, skills, MCPs y cluster |
+| GET | `/skills` | ❌ | Skills cargados y sus modelos |
+| GET | `/mcps` | ❌ | MCPs activos y sus tools |
+| GET | `/metrics` | ❌ | Métricas Prometheus |
+| GET | `/cluster/status` | ❌ | Estado del cluster 32B |
+| POST | `/cluster/start` | ❌ | Arrancar el cluster |
+| POST | `/cluster/stop` | ❌ | Parar el cluster |
 
 ## Caché
 
@@ -365,26 +376,13 @@ source ~/.bashrc
 |---|---|---|
 | `aider-auto` | auto | Uso general, el router elige |
 | `aider-fast` | fast | Preguntas rápidas, snippets simples |
-| `aider-reason` | reasoning | Lógica compleja, arquitectura |
-| `aider-mac` | mac-fast | Forzar mac, modelo pequeño |
-| `aider-mac-coder` | mac-coder | Forzar mac, deepseek-coder 16b |
-| `aider-mac-reason` | mac-reason | Forzar mac, deepseek-r1 |
-| `aider-4070` | gpu4070-coder | GPU principal, deepseek-coder |
-| `aider-4070-reason` | gpu4070-reason | GPU principal, deepseek-r1 |
-| `aider-gemini` | gemini-flash | Google, rápido y gratuito |
-| `aider-gemini-pro` | gemini-pro | Google, máxima calidad |
-| `aider-claude` | claude-sonnet | Anthropic, mejor para código |
-| `aider-claude-opus` | claude-opus | Anthropic, máxima calidad |
-| `aider-angular` | angular-expert-gemini | Experto Angular 18 + SSR |
-| `aider-angular-local` | angular-expert-4070 | Ídem, sin cloud |
-| `aider-spring` | spring-expert-gemini | Experto Spring Boot |
-| `aider-spring-local` | spring-expert-4070 | Ídem, sin cloud |
-| `aider-debug` | debug-gemini | Análisis de errores y bugs |
-| `aider-debug-local` | debug-4070 | Ídem, sin cloud |
-| `aider-refactor` | refactor-gemini | Limpieza y mejora de código |
-| `aider-refactor-local` | refactor-4070 | Ídem, sin cloud |
-| `aider-web` | web-design-gemini | HTML/CSS/UX |
-| `aider-web-local` | web-design-4070 | Ídem, sin cloud |
+| `aider-reason` | reasoning | Lógica compleja, arquitectura (usa cluster 32B si está activo) |
+| `aider-experiment` | experiment | Probar modelos de razonamiento |
+| `aider-angular` | angular-expert | Experto Angular + SSR |
+| `aider-spring` | spring-expert | Experto Spring Boot |
+| `aider-debug` | debug | Análisis de errores y bugs |
+| `aider-refactor` | refactor | Limpieza y mejora de código |
+| `aider-web` | web-design | HTML/CSS/UX |
 
 ### Comandos útiles dentro de Aider
 
@@ -574,6 +572,72 @@ curl http://router.casa.lan/skills
 
 # Estado del sistema (ruta pública, sin auth)
 curl http://router.casa.lan/health
+```
+
+---
+
+## Cluster DeepSeek-R1 32B
+
+El alias `reasoning` puede usar un modelo de 32B distribuido entre tres nodos (`gpu5060`, `gpu4070` y mac) usando llama.cpp con RPC. Cuando el cluster está activo es el primer candidato para `reasoning`; si está parado el router cae automáticamente al `deepseek-r1:14b` en los nodos individuales.
+
+### Arrancar y parar
+
+```bash
+curl -X POST http://router.casa.lan/cluster/start
+curl -X POST http://router.casa.lan/cluster/stop
+curl http://router.casa.lan/cluster/status
+```
+
+El router ejecuta los scripts `llama-cluster-start.sh` y `llama-cluster-stop.sh` via SSH en el nodo coordinador (`gpu5060`). Requiere que la clave SSH del usuario del servicio esté autorizada en los tres nodos.
+
+### Configuración SSH
+
+```bash
+# En el LXC del router, como root
+ssh-keygen -t ed25519 -f /var/lib/nobody/.ssh/id_ed25519 -N ""
+ssh-copy-id -i /var/lib/nobody/.ssh/id_ed25519.pub jesus@192.168.50.79   # gpu5060
+ssh-copy-id -i /var/lib/nobody/.ssh/id_ed25519.pub xuxo@192.168.50.118   # gpu4070
+ssh-copy-id -i /var/lib/nobody/.ssh/id_ed25519.pub jesus@192.168.50.119  # mac
+chown -R nobody:nogroup /var/lib/nobody/.ssh
+```
+
+---
+
+## MCPs (Model Context Protocol)
+
+El router soporta MCPs como módulo dinámico. Los MCPs se definen en ficheros `.json` en la carpeta `mcps/` y se cargan con hot-reload sin reiniciar el servicio.
+
+### Formato de definición
+
+```json
+{
+  "name": "buscador-web",
+  "command": "npx",
+  "args": ["-y", "@oevortex/ddg_search"],
+  "enabled": true,
+  "models": ["auto", "fast"]
+}
+```
+
+- `enabled` — activar/desactivar sin borrar el fichero
+- `models` — aliases donde se inyectan los tools (`"*"` para todos)
+
+### MCPs incluidos (desactivados por defecto)
+
+| Fichero | MCP | Tools |
+|---|---|---|
+| `buscador-web.json` | `@oevortex/ddg_search` | `web-search`, `iask-search`, `monica-search` |
+| `lector-web.json` | `mcp-server-fetch-typescript` | fetch de URLs |
+| `pensamiento-secuencial.json` | `@modelcontextprotocol/server-sequential-thinking` | razonamiento estructurado |
+| `lector-documentos.json` | `markitdown-mcp` | lectura de PDFs y documentos |
+
+### Limitaciones actuales
+
+Los tools solo se inyectan en peticiones que van a modelos cloud (Anthropic y Google), ya que son los únicos que soportan function calling nativo. Los modelos Ollama y llama.cpp no reciben tools.
+
+```bash
+# Ver MCPs activos y sus tools
+curl http://router.casa.lan/mcps
 ```
 
 ---
