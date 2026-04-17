@@ -21,7 +21,7 @@ import { sessionId, getConversation, saveConversation, deleteConversation } from
 import { selectCandidates, getNodeLoad } from "../nodes";
 import { compressHistory, warmupLLMLingua } from "../compression";
 import { getClusterStatus, startCluster, stopCluster } from "../cluster";
-import { loadMcps, watchMcps, getToolsForAlias, runAgenticLoop, MCPS } from "../mcps";
+import { loadMcps, watchMcps, getToolsForAlias, runAgenticLoop, runLocalAgenticLoop, MCPS } from "../mcps";
 import { callOllama, streamOllama, callAnthropic, streamAnthropic, callGoogle, streamGoogle, callLlamaCpp, streamLlamaCpp } from "../providers";
 import type { ChatRequest, ChatMessage, ConversationContext, GenerationOptions } from "../types";
 
@@ -204,18 +204,20 @@ async function handleChat(data: ChatRequest, reply: FastifyReply, req: FastifyRe
     console.log(`[ROUTER] ${model} → ${selected.model} @ ${selected.nodeName} (${selected.config.type})`);
     const start = Date.now();
 
-    // Solo cloud soporta tools por ahora
-    const supportsTools = selected.config.type === "anthropic" || selected.config.type === "google";
-    const activeTools   = supportsTools ? mcpTools : [];
+    // Solo cloud soporta function calling nativo
+    const supportsNativeTools = selected.config.type === "anthropic" || selected.config.type === "google";
+    // Ollama y llamacpp usan prompt injection
+    const supportsLocalTools  = selected.config.type === "ollama" || selected.config.type === "llamacpp";
+    const activeTools = mcpTools;
 
     if (activeTools.length > 0) {
-      console.log(`[MCPS] Inyectando ${activeTools.length} tool(s) en ${selected.nodeName}`);
+      console.log(`[MCPS] Inyectando ${activeTools.length} tool(s) en ${selected.nodeName} (${supportsNativeTools ? "native" : "prompt"})`);
     }
 
     let result: import("../types").OllamaResponse;
     try {
-      if (activeTools.length > 0) {
-        // Agentic loop — el modelo puede llamar tools múltiples veces
+      if (activeTools.length > 0 && supportsNativeTools) {
+        // Agentic loop nativo — Anthropic / Google
         const loopResult = await runAgenticLoop(
           async (msgs, tools) => {
             const r = selected.config.type === "anthropic"
@@ -225,6 +227,28 @@ async function handleChat(data: ChatRequest, reply: FastifyReply, req: FastifyRe
               content:      r.message?.content ?? "",
               // eslint-disable-next-line @typescript-eslint/no-explicit-any
               toolCalls:    (r as any).toolCalls,
+              inputTokens:  r.prompt_eval_count ?? -1,
+              outputTokens: r.eval_count ?? -1,
+            };
+          },
+          messages,
+          activeTools,
+        );
+        result = {
+          message:           { content: loopResult.content },
+          done:              true,
+          prompt_eval_count: loopResult.inputTokens,
+          eval_count:        loopResult.outputTokens,
+        };
+      } else if (activeTools.length > 0 && supportsLocalTools) {
+        // Agentic loop por prompt injection — Ollama / llama.cpp
+        const loopResult = await runLocalAgenticLoop(
+          async (msgs) => {
+            const r = selected.config.type === "llamacpp"
+              ? await callLlamaCpp(selected.config.url, msgs, opts)
+              : await callOllama(selected.config.url, selected.model, msgs, opts);
+            return {
+              content:      r.message?.content ?? "",
               inputTokens:  r.prompt_eval_count ?? -1,
               outputTokens: r.eval_count ?? -1,
             };

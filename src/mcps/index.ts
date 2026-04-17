@@ -327,3 +327,137 @@ export async function runAgenticLoop(
     outputTokens: totalOutput + last.outputTokens,
   };
 }
+
+// =========================
+// 📝 PROMPT INJECTION (para modelos locales)
+// =========================
+
+/**
+ * Genera el bloque de texto que describe los tools disponibles
+ * para inyectarlo en el system prompt.
+ */
+export function buildToolsSystemPrompt(tools: McpTool[]): string {
+  if (tools.length === 0) return "";
+
+  const toolDescriptions = tools.map((t) => {
+    const params = t.function.parameters as {
+      properties?: Record<string, { type?: string; description?: string }>;
+      required?: string[];
+    };
+    const props = Object.entries(params.properties ?? {})
+      .map(([name, p]) => `  - ${name} (${p.type ?? "string"}): ${p.description ?? ""}`)
+      .join("\n");
+    return `### ${t.function.name}\n${t.function.description}\nParameters:\n${props || "  (none)"}`;
+  }).join("\n\n");
+
+  return `You have access to the following tools. When you need to use a tool, respond with ONLY a tool call in this exact format and nothing else:
+<tool_call>{"name": "tool_name", "arguments": {"param": "value"}}</tool_call>
+
+After receiving the tool result, continue your response naturally.
+
+Available tools:
+${toolDescriptions}
+
+If you don't need to use any tool, respond normally without any tool_call tags.`;
+}
+
+/**
+ * Inyecta el prompt de tools en el array de mensajes.
+ * Si ya hay un system message, lo añade al final.
+ * Si no, crea uno nuevo.
+ */
+export function injectToolsAsPrompt(messages: ChatMessage[], tools: McpTool[]): ChatMessage[] {
+  if (tools.length === 0) return messages;
+  const toolsPrompt = buildToolsSystemPrompt(tools);
+  const systemIdx   = messages.findIndex((m) => m.role === "system");
+  if (systemIdx >= 0) {
+    const updated = [...messages];
+    updated[systemIdx] = {
+      ...updated[systemIdx],
+      content: `${updated[systemIdx].content}\n\n${toolsPrompt}`,
+    };
+    return updated;
+  }
+  return [{ role: "system", content: toolsPrompt }, ...messages];
+}
+
+/**
+ * Detecta si la respuesta del modelo contiene un tool call en formato
+ * <tool_call>{"name": "...", "arguments": {...}}</tool_call>
+ * Devuelve el tool call parseado o null si no hay ninguno.
+ */
+export function parseToolCall(content: string): { name: string; arguments: Record<string, unknown> } | null {
+  const match = content.match(/<tool_call>([\s\S]*?)<\/tool_call>/);
+  if (!match) return null;
+  try {
+    const parsed = JSON.parse(match[1].trim()) as {
+      name?: string;
+      arguments?: Record<string, unknown>;
+    };
+    if (!parsed.name) return null;
+    return { name: parsed.name, arguments: parsed.arguments ?? {} };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Loop agéntico para modelos locales (Ollama / llama.cpp) usando prompt injection.
+ * El modelo indica que quiere usar un tool con <tool_call>...</tool_call> en su respuesta.
+ */
+export async function runLocalAgenticLoop(
+  callModel: (messages: ChatMessage[]) => Promise<{
+    content: string;
+    inputTokens: number;
+    outputTokens: number;
+  }>,
+  messages: ChatMessage[],
+  tools: McpTool[],
+  maxTurns = 5,
+): Promise<{ content: string; inputTokens: number; outputTokens: number }> {
+  let totalInput   = 0;
+  let totalOutput  = 0;
+  let currentMessages = injectToolsAsPrompt(messages, tools);
+
+  for (let turn = 0; turn < maxTurns; turn++) {
+    const response = await callModel(currentMessages);
+    totalInput  += response.inputTokens;
+    totalOutput += response.outputTokens;
+
+    const toolCall = parseToolCall(response.content);
+    if (!toolCall) {
+      // Sin tool call — respuesta final
+      return { content: response.content, inputTokens: totalInput, outputTokens: totalOutput };
+    }
+
+    console.log(`[MCPS] Local tool call: ${toolCall.name}(${JSON.stringify(toolCall.arguments)})`);
+    const result = await executeTool(toolCall.name, toolCall.arguments);
+    console.log(`[MCPS] ${toolCall.name} → ${result.slice(0, 150)}...`);
+
+    // Añadir el intercambio al historial y continuar
+    currentMessages = [
+      ...currentMessages,
+      { role: "assistant", content: response.content },
+      { role: "user",      content: `<tool_result>${result}</tool_result>` },
+    ];
+  }
+
+  // Límite de turnos alcanzado — pedir respuesta final sin tools
+  const systemIdx = currentMessages.findIndex((m) => m.role === "system");
+  const finalMessages = [...currentMessages];
+  if (systemIdx >= 0) {
+    finalMessages[systemIdx] = {
+      ...finalMessages[systemIdx],
+      content: finalMessages[systemIdx].content.replace(/You have access to the following tools[\s\S]*?If you don't need to use any tool, respond normally without any tool_call tags\./s, "").trim(),
+    };
+  }
+  finalMessages.push({ role: "user", content: "Please provide your final answer based on the tool results above." });
+
+  const last = await callModel(finalMessages);
+  return {
+    content:      last.content,
+    inputTokens:  totalInput  + last.inputTokens,
+    outputTokens: totalOutput + last.outputTokens,
+  };
+}
+
