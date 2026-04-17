@@ -1,0 +1,8 @@
+{
+  "name": "fast",
+  "description": "Respuestas rápidas y código simple",
+  "nodes": [
+    { "nodeName": "gpu5060", "model": "qwen2.5-coder:7b" },
+    { "nodeName": "mac",     "model": "qwen2.5-coder:1.5b" }
+  ]
+}

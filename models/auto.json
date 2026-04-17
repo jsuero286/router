@@ -1,0 +1,11 @@
+{
+  "name": "auto",
+  "description": "Uso general — equilibrio calidad/velocidad",
+  "nodes": [
+    { "nodeName": "gpu5060", "model": "qwen2.5-coder:7b" },
+    { "nodeName": "gpu4070", "model": "qwen2.5-coder:14b" },
+    { "nodeName": "mac",     "model": "deepseek-coder-v2:16b" },
+    { "nodeName": "gemini",  "model": "gemini-2.5-flash" },
+    { "nodeName": "claude",  "model": "claude-sonnet-4-6" }
+  ]
+}

@@ -10,6 +10,7 @@ export const ANTHROPIC_MAX_TOKENS    = parseInt(process.env.ANTHROPIC_MAX_TOKENS
 export const GOOGLE_API_KEY          = process.env.GOOGLE_API_KEY ?? "";
 export const SKILLS_DIR              = process.env.SKILLS_DIR ?? path.join(process.cwd(), "skills");
 export const MCPS_DIR                = process.env.MCPS_DIR   ?? path.join(process.cwd(), "mcps");
+export const MODELS_DIR              = process.env.MODELS_DIR ?? path.join(process.cwd(), "models");
 export const METRICS_ENABLED         = (process.env.METRICS_ENABLED ?? "true") === "true";
 export const REDIS_HOST              = process.env.REDIS_HOST ?? "127.0.0.1";
 export const REDIS_PORT              = parseInt(process.env.REDIS_PORT ?? "6379", 10);
@@ -91,40 +92,4 @@ export const NODES: Record<string, NodeConfig> = {
   "llama-cluster": { url: "http://ai-5070.casa.lan:8080", type: "llamacpp" },
 };
 
-// =========================
-// 🗺️ MODEL MAP
-// =========================
 
-export const BASE_MODEL_MAP: Record<string, NodeEntry[]> = {
-  // Rápido — respuestas inmediatas, código simple
-  fast: [
-    { nodeName: "gpu5060", model: "qwen2.5-coder:7b" },
-    { nodeName: "mac",     model: "qwen2.5-coder:1.5b" },
-  ],
-
-  // General — equilibrio calidad/velocidad
-  auto: [
-    { nodeName: "gpu5060", model: "qwen2.5-coder:7b" },
-    { nodeName: "gpu4070", model: "qwen2.5-coder:14b" },
-    { nodeName: "mac",     model: "deepseek-coder-v2:16b" },
-    { nodeName: "gemini",  model: "gemini-2.5-flash" },
-    { nodeName: "claude",  model: "claude-sonnet-4-6" },
-  ],
-
-  // Razonamiento — arquitectura, debugging, lógica compleja
-  // Requiere cluster activo (llama-cluster-start.sh en gpu5060)
-  reasoning: [
-    { nodeName: "llama-cluster", model: "DeepSeek-R1-Distill-Qwen-32B-Q4_K_M.gguf" },
-    { nodeName: "gpu4070",       model: "deepseek-r1:14b" },
-    { nodeName: "mac",           model: "deepseek-r1:14b" },
-    { nodeName: "gemini",        model: "gemini-2.5-pro" },
-    { nodeName: "claude",        model: "claude-sonnet-4-6" },
-  ],
-
-  // Experimentos — para probar modelos de razonamiento sin tocar reasoning
-  experiment: [
-    { nodeName: "mac",     model: "deepseek-r1:14b" },
-    { nodeName: "gpu4070", model: "deepseek-r1:14b" },
-    { nodeName: "claude",  model: "claude-opus-4-6" },
-  ],
-};

@@ -14,7 +14,8 @@ import {
   NODE_SELECTED_inc, TOKENS_PER_SEC_observe, COST_USD_inc,
 } from "../metrics";
 import { getCache, setCache, isRedisAvailable, connectRedis } from "../cache";
-import { SKILLS, MODEL_MAP, SKILL_CACHE_TTL, loadSkills, watchSkills, extractSkill, injectSkill, getSkillCacheTtl } from "../skills";
+import { SKILLS, SKILL_CACHE_TTL, loadSkills, watchSkills, extractSkill, injectSkill, getSkillCacheTtl } from "../skills";
+import { loadModels, watchModels, MODELS_META, MODEL_MAP } from "../models";
 import { classifyComplexity, complexityToAlias } from "../classifier";
 import { sessionId, getConversation, saveConversation, deleteConversation } from "../history";
 import { selectCandidates, getNodeLoad } from "../nodes";
@@ -322,10 +323,15 @@ app.post("/v1/chat/completions", async (req: FastifyRequest, reply: FastifyReply
 });
 
 app.get("/v1/models", async (_req, reply) => {
-  return reply.send({
-    object: "list",
-    data: Object.keys(MODEL_MAP).map((id) => ({ id, object: "model", owned_by: "local" })),
-  });
+  // Solo mostrar los aliases definidos en /models/ + los skills
+  const baseModels = Object.keys(MODELS_META).map((id) => ({
+    id, object: "model", owned_by: "local",
+    description: MODELS_META[id].description ?? "",
+  }));
+  const skillModels = Object.keys(SKILLS).map((id) => ({
+    id, object: "model", owned_by: "local", description: `Skill: ${id}`,
+  }));
+  return reply.send({ object: "list", data: [...baseModels, ...skillModels] });
 });
 
 app.get("/v1", async (_req, reply) => reply.send({ status: "ok" }));
@@ -467,7 +473,7 @@ async function warmupNode(nodeName: string, nodeUrl: string, model: string): Pro
 
 async function warmupAll(): Promise<void> {
   const toWarm = new Map<string, { url: string; model: string }>();
-  for (const [, entries] of Object.entries(MODEL_MAP)) {
+  for (const [, entries] of Object.entries(MODEL_MAP) as [string, import("../types").NodeEntry[]][]) {
     for (const entry of entries) {
       const config = NODES[entry.nodeName];
       if (!config || config.type !== "ollama") continue;
@@ -487,6 +493,9 @@ async function warmupAll(): Promise<void> {
 
 export async function startServer(): Promise<void> {
   await connectRedis();
+
+  loadModels();
+  watchModels();
 
   loadSkills();
   watchSkills();

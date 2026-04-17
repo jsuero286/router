@@ -1,14 +1,14 @@
-import * as fs from "fs";
+import * as fs   from "fs";
 import * as path from "path";
-import { SKILLS_DIR, CACHE_TTL, BASE_MODEL_MAP } from "../config";
-import type { SkillEntry, SkillFrontmatter, NodeEntry } from "../types";
+import { SKILLS_DIR, CACHE_TTL } from "../config";
+import { MODEL_MAP } from "../models";
+import type { SkillEntry, SkillFrontmatter } from "../types";
 
 // =========================
 // 🧠 SKILLS — carga dinámica con frontmatter YAML
 // =========================
 
 export const SKILLS: Record<string, SkillEntry> = {};
-export const MODEL_MAP: Record<string, NodeEntry[]> = { ...BASE_MODEL_MAP };
 export const SKILL_CACHE_TTL: Record<string, number> = {};
 
 function parseFrontmatter(raw: string): { frontmatter: SkillFrontmatter; body: string } {
@@ -36,19 +36,18 @@ function buildSkillModelMap(skillName: string, fm: SkillFrontmatter): void {
   const primaryModel  = fm.preferred_model ?? "deepseek-coder-v2:16b";
   const fallbackNode  = fm.fallback_node   ?? "gpu4070";
   const fallbackModel = fm.fallback_model  ?? "deepseek-coder-v2:16b";
-  const cloudAlias    = fm.cloud_fallback  ?? "gemini-flash";
-  const cloudEntries  = BASE_MODEL_MAP[cloudAlias] ?? BASE_MODEL_MAP["auto"] ?? [];
+  const cloudAlias    = fm.cloud_fallback  ?? "auto";
+  const cloudEntries  = MODEL_MAP[cloudAlias] ?? MODEL_MAP["auto"] ?? [];
 
-  // Alias principal del skill — usa nodos locales + fallback cloud
+  // El alias del skill se añade al MODEL_MAP global
   MODEL_MAP[skillName] = [
     { nodeName: primaryNode,  model: primaryModel  },
     { nodeName: fallbackNode, model: fallbackModel },
     ...cloudEntries,
   ];
 
-  // Variantes por calidad
-  MODEL_MAP[`${skillName}-fast`]      = BASE_MODEL_MAP["fast"] ?? [];
-  MODEL_MAP[`${skillName}-reasoning`] = BASE_MODEL_MAP["reasoning"] ?? [];
+  MODEL_MAP[`${skillName}-fast`]      = MODEL_MAP["fast"]      ?? [];
+  MODEL_MAP[`${skillName}-reasoning`] = MODEL_MAP["reasoning"] ?? [];
   MODEL_MAP[`${skillName}-gemini`]    = [{ nodeName: "gemini", model: "gemini-2.5-flash" }];
   MODEL_MAP[`${skillName}-claude`]    = [{ nodeName: "claude", model: "claude-sonnet-4-6" }];
 }
@@ -64,8 +63,14 @@ export function loadSkills(): void {
     return;
   }
 
-  for (const key of Object.keys(MODEL_MAP)) delete MODEL_MAP[key];
-  Object.assign(MODEL_MAP, BASE_MODEL_MAP);
+  // Limpiar solo las entradas de skills del MODEL_MAP (no los aliases base)
+  for (const skillName of Object.keys(SKILLS)) {
+    delete MODEL_MAP[skillName];
+    delete MODEL_MAP[`${skillName}-fast`];
+    delete MODEL_MAP[`${skillName}-reasoning`];
+    delete MODEL_MAP[`${skillName}-gemini`];
+    delete MODEL_MAP[`${skillName}-claude`];
+  }
   for (const key of Object.keys(SKILLS)) delete SKILLS[key];
 
   for (const file of files) {

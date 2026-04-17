@@ -1,6 +1,6 @@
 import { NODES, ANTHROPIC_API_KEY, GOOGLE_API_KEY } from "../config";
 import { NODE_LOAD_set, NODE_SELECTED_inc } from "../metrics";
-import { MODEL_MAP } from "../skills";
+import { MODEL_MAP } from "../models";
 import type { NodeConfig, OllamaPsResponse, SelectedNode } from "../types";
 
 // =========================
