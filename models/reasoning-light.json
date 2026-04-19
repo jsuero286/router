@@ -1,0 +1,10 @@
+{
+  "name": "reasoning-light",
+  "description": "Razonamiento ligero en mac — sin necesitar el cluster",
+  "nodes": [
+    { "nodeName": "mac",     "model": "gemma4:e4b" },
+    { "nodeName": "gpu4070", "model": "deepseek-r1:14b" },
+    { "nodeName": "gemini",  "model": "gemini-2.5-pro" },
+    { "nodeName": "claude",  "model": "claude-sonnet-4-6" }
+  ]
+}

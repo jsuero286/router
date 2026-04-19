@@ -1,0 +1,7 @@
+{
+  "name": "mac-qwen3",
+  "description": "Qwen3 14B en mac — razonamiento con thinking",
+  "nodes": [
+    { "nodeName": "mac", "model": "qwen3:14b" }
+  ]
+}
