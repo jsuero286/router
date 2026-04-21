@@ -1,0 +1,7 @@
+{
+  "name": "mac-gemma",
+  "description": "Gemma 4 4B en mac — uso general ligero",
+  "nodes": [
+    { "nodeName": "mac", "model": "gemma4:e4b" }
+  ]
+}

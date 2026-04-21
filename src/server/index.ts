@@ -67,6 +67,28 @@ export function trackUsage(model: string, inputTokens: number, completionTokens:
 }
 
 // =========================
+// 🧹 NORMALIZACIÓN DE MENSAJES
+// =========================
+
+/**
+ * Normaliza mensajes que pueden venir con content como array (formato multimodal OpenAI)
+ * extrayendo solo el texto para compatibilidad con todos los providers.
+ */
+function normalizeMessages(messages: ChatMessage[]): ChatMessage[] {
+  return messages.map((m) => {
+    if (typeof m.content === "string") return m;
+    if (Array.isArray(m.content)) {
+      const text = (m.content as Array<{ type: string; text?: string }>)
+        .filter((c) => c.type === "text")
+        .map((c) => c.text ?? "")
+        .join(" ");
+      return { ...m, content: text };
+    }
+    return { ...m, content: String(m.content) };
+  });
+}
+
+// =========================
 // 🔥 CHAT HANDLER
 // =========================
 
@@ -83,6 +105,9 @@ async function handleChat(data: ChatRequest, reply: FastifyReply, req: FastifyRe
   if (messages.length === 0) {
     return reply.status(400).send({ error: { message: "messages required", type: "invalid_request_error" } });
   }
+
+  // Normalizar content de array a string (formato multimodal → texto plano)
+  messages = normalizeMessages(messages);
 
   REQUEST_COUNT_inc({ model });
 

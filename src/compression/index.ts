@@ -98,7 +98,7 @@ Summary:`;
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ prompt, n_predict: 200, temperature: 0.3, stream: false }),
-        signal: AbortSignal.timeout(30_000),
+        signal: AbortSignal.timeout(60_000),
       });
       if (!res.ok) { console.warn(`[COMPRESSION] HTTP ${res.status} — skipping`); return null; }
       const data = (await res.json()) as { content?: string };
@@ -108,7 +108,7 @@ Summary:`;
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ model: COMPRESSION_MODEL, prompt, stream: false, options: { temperature: 0.3 } }),
-        signal: AbortSignal.timeout(30_000),
+        signal: AbortSignal.timeout(60_000),
       });
       if (!res.ok) { console.warn(`[COMPRESSION] HTTP ${res.status} — skipping`); return null; }
       const data = (await res.json()) as { response?: string };

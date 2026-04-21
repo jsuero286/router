@@ -1,0 +1,7 @@
+{
+  "name": "mac-phi4",
+  "description": "Microsoft Phi-4 14B en mac — razonamiento",
+  "nodes": [
+    { "nodeName": "mac", "model": "phi4:14b" }
+  ]
+}

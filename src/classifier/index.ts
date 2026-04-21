@@ -20,17 +20,30 @@ const SIMPLE_KEYWORDS = [
   "traduce", "translate", "resume", "summarize", "acorta", "shorten",
 ];
 
+function extractTextContent(content: string | unknown[]): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .filter((c: any) => c.type === "text")
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      .map((c: any) => c.text ?? "")
+      .join(" ");
+  }
+  return "";
+}
+
 function classifyByRules(messages: ChatMessage[]): Complexity | null {
   const lastUser = [...messages].reverse().find((m) => m.role === "user");
   if (!lastUser) return null;
 
-  const text  = lastUser.content.toLowerCase();
+  const text  = extractTextContent(lastUser.content as string | unknown[]).toLowerCase();
   const words = text.split(/\s+/).length;
 
   if (words <= 8 && !COMPLEX_KEYWORDS.some((k) => text.includes(k))) return "simple";
   if (COMPLEX_KEYWORDS.some((k) => text.includes(k))) return "complex";
   if (SIMPLE_KEYWORDS.some((k) => text.includes(k)) && words <= 20) return "simple";
-  if (lastUser.content.length > 1500) return "complex";
+  if (text.length > 1500) return "complex";
 
   return null;
 }
@@ -44,7 +57,7 @@ async function classifyByModel(messages: ChatMessage[]): Promise<Complexity> {
 - medium: code snippets, explanations, short implementations
 - complex: architecture, debugging, deep analysis, long implementations, system design
 
-Request: "${lastUser.content.slice(0, 300)}"
+Request: "${extractTextContent(lastUser.content as string | unknown[]).slice(0, 300)}"
 
 Reply with only one word:`;
 
